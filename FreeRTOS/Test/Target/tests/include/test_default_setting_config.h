@@ -1,6 +1,6 @@
 /*
  * FreeRTOS V202212.00
- * Copyright (C) 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright (C) 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -24,34 +24,35 @@
  *
  */
 
-#ifndef TEST_CONFIG_H
-#define TEST_CONFIG_H
+#ifndef TEST_DEFAULT_SETTING_CONFIG_H
+#define TEST_DEFAULT_SETTING_CONFIG_H
 
-/* This file must be included at the end of the FreeRTOSConfig.h. It contains
- * any FreeRTOS specific configurations that the test requires. */
+#ifndef testNOT_USING_UNITY
+    #include "unity.h"
+#endif
 
-#ifdef configRUN_MULTIPLE_PRIORITIES
-    #undef configRUN_MULTIPLE_PRIORITIES
-#endif /* ifdef configRUN_MULTIPLE_PRIORITIES */
+#ifndef testRUN_TEST_CASE_FUNCTION
+    #define testRUN_TEST_CASE_FUNCTION    RUN_TEST
+#endif
 
-#ifdef configUSE_CORE_AFFINITY
-    #undef configUSE_CORE_AFFINITY
-#endif /* ifdef configUSE_CORE_AFFINITY */
+#ifndef testBEGIN_FUNCTION
+    #define testBEGIN_FUNCTION    UNITY_BEGIN
+#endif
 
-#ifdef configUSE_MINIMAL_IDLE_HOOK
-    #undef configUSE_MINIMAL_IDLE_HOOK
-#endif /* ifdef configUSE_MINIMAL_IDLE_HOOK */
+#ifndef testEND_FUNCTION
+    #define testEND_FUNCTION    UNITY_END
+#endif
 
-#ifdef configUSE_TASK_PREEMPTION_DISABLE
-    #undef configUSE_TASK_PREEMPTION_DISABLE
-#endif /* ifdef configUSE_TASK_PREEMPTION_DISABLE */
+#ifndef testSETUP_FUNCTION_PROTOTYPE
+    #define testSETUP_FUNCTION_PROTOTYPE( fxn )    void fxn( void )
+#endif
 
-#ifdef configUSE_TIME_SLICING
-    #undef configUSE_TIME_SLICING
-#endif /* ifdef configUSE_TIME_SLICING */
+#ifndef testTEARDOWN_FUNCTION_PROTOTYPE
+    #define testTEARDOWN_FUNCTION_PROTOTYPE( fxn )    void fxn( void )
+#endif
 
-#ifdef configUSE_PREEMPTION
-    #undef configUSE_PREEMPTION
-#endif /* ifdef configUSE_PREEMPTION */
+#ifndef testENTRY_FUNCTION_PROTOTYPE
+    #define testENTRY_FUNCTION_PROTOTYPE( fxn )    void fxn( void )
+#endif
 
-#endif /* ifndef TEST_CONFIG_H */
+#endif /* TEST_DEFAULT_SETTING_CONFIG_H */
