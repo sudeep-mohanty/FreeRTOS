@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
+# SPDX-License-Identifier: Apache-2.0
+
+# SMP, dual-core, multiple priorities (required by the perf-comparison tests).
+CONFIG_FREERTOS_SMP=y
+CONFIG_FREERTOS_RUN_MULTIPLE_PRIORITIES=y
+CONFIG_FREERTOS_HZ=1000
+
+# Measure realistic code (-O2).
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Keep the measurement loops off the watchdogs.
+CONFIG_ESP_TASK_WDT_INIT=n
+CONFIG_ESP_INT_WDT=n
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
