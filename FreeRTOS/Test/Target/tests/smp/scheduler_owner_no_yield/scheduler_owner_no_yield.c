@@ -71,6 +71,11 @@
 #define testCORE_UNDER_TEST    ( 0 )
 #define testCORE_MASK          ( ( UBaseType_t ) ( 1U << testCORE_UNDER_TEST ) )
 
+/* Mid-range priorities so the helper can be raised above the victim while
+ * staying within the valid range, independent of the test runner's priority. */
+#define testVICTIM_PRIORITY    ( ( UBaseType_t ) ( configMAX_PRIORITIES / 2U ) )
+#define testHELPER_PRIORITY    ( ( UBaseType_t ) ( testVICTIM_PRIORITY - 1U ) )
+
 /*-----------------------------------------------------------*/
 
 static TaskHandle_t xHelperTaskHandle = NULL;
@@ -93,21 +98,20 @@ static void prvHelperTask( void * pvParameters )
 
 static void Test_SchedulerOwnerNotForcedToYield( void )
 {
-    UBaseType_t uxSelfPriority;
-
-    /* Run on the same core as the helper - this task becomes the suspension
-     * owner core. */
+    /* Run on the same core as the helper, at a known mid-range priority - this
+     * task becomes the suspension owner core. Setting our own priority makes the
+     * test independent of the runner's priority (so raising the helper above us
+     * stays in range). */
     vTaskCoreAffinitySet( NULL, testCORE_MASK );
+    vTaskPrioritySet( NULL, testVICTIM_PRIORITY );
     vTaskDelay( pdMS_TO_TICKS( 10 ) );
-
-    uxSelfPriority = uxTaskPriorityGet( NULL );
 
     vTaskSuspendAll();
     {
         /* Raise the (ready) helper above ourselves on the same core. This marks
          * this core taskTASK_SCHEDULED_TO_YIELD even though the scheduler is
          * suspended. */
-        vTaskPrioritySet( xHelperTaskHandle, uxSelfPriority + 1U );
+        vTaskPrioritySet( xHelperTaskHandle, testVICTIM_PRIORITY + 1U );
 
         /* Enter and exit a TCB critical section. vTaskPreemptionDisable() calls
          * vTaskTCBEnterCritical(), which runs prvTaskTCBLockCheckForRunStateChange
@@ -117,7 +121,7 @@ static void Test_SchedulerOwnerNotForcedToYield( void )
         vTaskPreemptionEnable( NULL );
 
         /* Restore the helper priority before resuming. */
-        vTaskPrioritySet( xHelperTaskHandle, tskIDLE_PRIORITY + 1U );
+        vTaskPrioritySet( xHelperTaskHandle, testHELPER_PRIORITY );
     }
     ( void ) xTaskResumeAll();
 
@@ -137,7 +141,7 @@ testSETUP_FUNCTION_PROTOTYPE( setUp )
                                       "helper",
                                       configMINIMAL_STACK_SIZE * 2,
                                       NULL,
-                                      tskIDLE_PRIORITY + 1U,
+                                      testHELPER_PRIORITY,
                                       testCORE_MASK,
                                       &xHelperTaskHandle );
     configASSERT( xReturn == pdPASS );

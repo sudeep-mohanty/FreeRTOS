@@ -21,4 +21,12 @@
 #define TEST_CONFIG_H
 #define configTARGET_TEST_USE_CUSTOM_SETTING    1
 
+/* Several target tests busy-loop with portNOP(), which the ESP-IDF Xtensa port
+ * maps to XT_NOP() (see portmacro.h "Todo: Check if XT_NOP exists"). That symbol
+ * is not declared in a plain test translation unit, so provide a fallback here
+ * (this header is force-included ahead of portmacro.h). */
+#ifndef XT_NOP
+    #define XT_NOP()    __asm__ __volatile__ ( "nop" )
+#endif
+
 #endif /* BOARD_TEST_CONFIG_H */
