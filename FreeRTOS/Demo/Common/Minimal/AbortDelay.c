@@ -113,6 +113,16 @@
     static void prvCheckExpectedTimeIsWithinAnAcceptableMargin( TickType_t xStartTime,
                                                                 TickType_t xExpectedBlockTime );
 
+/*
+ * Obtains a peer task's handle from its name, waiting (bounded) for the peer to
+ * be created.  The two test tasks look each other up by name, but with more
+ * than one core the task created first starts running on the other core while
+ * vCreateAbortDelayTasks() is still creating its peer, so the lookup can run
+ * before the peer exists.  Returning NULL on timeout leaves the configASSERT()
+ * at the call site to catch a task that is genuinely missing.
+ */
+    static TaskHandle_t prvWaitForPeerTaskHandle( const char * pcName );
+
 /*-----------------------------------------------------------*/
 
 /* Used to ensure that tasks are still executing without error. */
@@ -142,6 +152,32 @@
     }
 /*-----------------------------------------------------------*/
 
+    static TaskHandle_t prvWaitForPeerTaskHandle( const char * pcName )
+    {
+        const TickType_t xStart = xTaskGetTickCount();
+        TaskHandle_t xHandle;
+
+        for( ; ; )
+        {
+            xHandle = xTaskGetHandle( pcName );
+
+            if( xHandle != NULL )
+            {
+                break;
+            }
+
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                break;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        return xHandle;
+    }
+/*-----------------------------------------------------------*/
+
     static void prvControllingTask( void * pvParameters )
     {
         TaskHandle_t xBlockingTask;
@@ -152,7 +188,7 @@
         /* Just to remove compiler warnings. */
         ( void ) pvParameters;
 
-        xBlockingTask = xTaskGetHandle( pcBlockingTaskName );
+        xBlockingTask = prvWaitForPeerTaskHandle( pcBlockingTaskName );
         configASSERT( xBlockingTask );
 
         for( ; ; )
@@ -219,7 +255,7 @@
          * below. */
         prvPerformSingleTaskTests();
 
-        xControllingTask = xTaskGetHandle( pcControllingTaskName );
+        xControllingTask = prvWaitForPeerTaskHandle( pcControllingTaskName );
         configASSERT( xControllingTask );
 
         for( ; ; )
