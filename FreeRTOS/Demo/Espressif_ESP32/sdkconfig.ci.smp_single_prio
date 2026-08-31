@@ -1,0 +1,8 @@
+# Sweep: dual-core, single-priority scheduling.
+#
+# configRUN_MULTIPLE_PRIORITIES=0 constrains the scheduler so that only
+# tasks of one priority level can run concurrently across cores.
+
+CONFIG_FREERTOS_SMP=y
+CONFIG_FREERTOS_UNICORE=n
+CONFIG_FREERTOS_RUN_MULTIPLE_PRIORITIES=n

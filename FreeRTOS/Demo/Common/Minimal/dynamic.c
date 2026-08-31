@@ -133,7 +133,7 @@ static volatile BaseType_t xSuspendedQueueSendError = pdFALSE;
 static volatile BaseType_t xSuspendedQueueReceiveError = pdFALSE;
 
 /* Queue used by the second test. */
-QueueHandle_t xSuspendedTestQueue;
+static QueueHandle_t xSuspendedTestQueue;
 
 /* The value the queue receive task expects to receive next.  This is file
  * scope so xAreDynamicPriorityTasksStillRunning() can ensure it is still
@@ -338,6 +338,26 @@ static portTASK_FUNCTION( vCounterControlTask, pvParameters )
          * suspended itself. */
         #if ( INCLUDE_eTaskGetState == 1 )
         {
+            #if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+            {
+                /* Under multi-priority SMP, the resumed higher-priority
+                 * task runs in parallel on the peer core, so this task
+                 * may reach the state check before vTaskSuspend() has
+                 * completed there.  Wait (bounded) for the suspend to be
+                 * observable. */
+                TickType_t xWaitStart = xTaskGetTickCount();
+
+                while( eTaskGetState( xLimitedIncrementHandle ) != eSuspended )
+                {
+                    if( ( xTaskGetTickCount() - xWaitStart ) > pdMS_TO_TICKS( 100 ) )
+                    {
+                        break;
+                    }
+
+                    vTaskDelay( 1 );
+                }
+            }
+            #endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
             configASSERT( eTaskGetState( xLimitedIncrementHandle ) == eSuspended );
         }
         #endif /* INCLUDE_eTaskGetState */

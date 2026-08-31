@@ -29,6 +29,19 @@ extern "C" {
 
 #include <sys/types.h>
 
+void uart_init( void );
+#ifndef __PICOLIBC__
+__attribute__( ( used ) ) int _fstat( int file );
+int _read( int file,
+           char * buf,
+           int len );
+int _write( int file,
+            char * buf,
+            int len );
+
+void * _sbrk( int incr );
+#endif
+
 typedef struct UART_t
 {
     volatile uint32_t DATA;
@@ -44,10 +57,12 @@ typedef struct UART_t
 #define UART_CTRL_TX_EN    ( 1 << 0 )
 
 
+#ifndef __PICOLIBC__
 extern unsigned long _heap_bottom;
 extern unsigned long _heap_top;
 
 static char * heap_end = ( char * ) &_heap_bottom;
+#endif
 
 /**
  * @brief initializes the UART emulated hardware
@@ -57,6 +72,24 @@ void uart_init( void )
     UART0_ADDR->BAUDDIV = 16;
     UART0_ADDR->CTRL = UART_CTRL_TX_EN;
 }
+
+#ifdef __PICOLIBC__
+
+#include <stdio.h>
+
+int
+_uart_putc(char c, FILE *file)
+{
+    ( void ) file;
+
+    UART_DR( UART0_ADDR ) = c;
+    return (unsigned char) c;
+}
+
+static FILE __stdio = FDEV_SETUP_STREAM(_uart_putc, NULL, NULL, _FDEV_SETUP_WRITE);
+__attribute__( ( used ) ) FILE *const stdout = &__stdio;
+
+#else
 
 /**
  * @brief not used anywhere in the code
@@ -127,6 +160,7 @@ void * _sbrk( int incr )
 
     return prev_heap_end;
 }
+#endif
 
 #ifdef __cplusplus
 }

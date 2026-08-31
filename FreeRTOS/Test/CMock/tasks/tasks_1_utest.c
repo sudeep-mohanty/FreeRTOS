@@ -50,7 +50,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-
 /* ===========================  EXTERN VARIABLES  =========================== */
 extern TCB_t * volatile pxCurrentTCB;
 extern List_t pxReadyTasksLists[ configMAX_PRIORITIES ];
@@ -115,15 +114,16 @@ extern volatile UBaseType_t uxSchedulerSuspended;
         ( list_item2 ).pxContainer = &( list );                          \
     } while( 0 )
 
-#define taskNOT_WAITING_NOTIFICATION    ( ( uint8_t ) 0 )
-#define taskWAITING_NOTIFICATION        ( ( uint8_t ) 1 )
-#define taskNOTIFICATION_RECEIVED       ( ( uint8_t ) 2 )
-#define TCB_ARRAY                       10 /* simulate up to 10 tasks: add more if needed */
+#define taskNOT_WAITING_NOTIFICATION        ( ( uint8_t ) 0 )
+#define taskWAITING_NOTIFICATION            ( ( uint8_t ) 1 )
+#define taskNOTIFICATION_RECEIVED           ( ( uint8_t ) 2 )
+#define TCB_ARRAY                           10 /* simulate up to 10 tasks: add more if needed */
+#define taskEVENT_LIST_ITEM_VALUE_IN_USE    ( ( uint32_t ) 0x80000000U )
 
 /**
  * @brief CException code for when a configASSERT should be intercepted.
  */
-#define configASSERT_E                  0xAA101
+#define configASSERT_E                      0xAA101
 
 /* ===========================  GLOBAL VARIABLES  =========================== */
 static StaticTask_t xIdleTaskTCB;
@@ -1503,7 +1503,7 @@ void test_vTaskPrioritySet_success_gt_max_prio( void )
     ptcb = ( TCB_t * ) taskHandle;
 
     /* expectations */
-    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( 0x80000000UL );
+    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listIS_CONTAINED_WITHIN_ExpectAndReturn( &pxReadyTasksLists[ 3 ],
                                              &( ptcb->xStateListItem ),
                                              pdTRUE );
@@ -1528,7 +1528,7 @@ void test_vTaskPrioritySet_success_call_current_null( void )
     ptcb = ( TCB_t * ) taskHandle;
 
     /* expectations */
-    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( 0x80000000UL );
+    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listIS_CONTAINED_WITHIN_ExpectAndReturn( &pxReadyTasksLists[ 3 ],
                                              &( ptcb->xStateListItem ),
                                              pdTRUE );
@@ -1638,7 +1638,7 @@ void test_vTaskPrioritySet_success_gt_curr_prio_diff_base( void )
     ptcb = ( TCB_t * ) taskHandle;
     TEST_ASSERT_EQUAL_PTR( pxCurrentTCB, taskHandle2 );
     /* task handle will inherit the priorit of taskHandle2 */
-    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( 0x80000000UL );
+    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listIS_CONTAINED_WITHIN_ExpectAndReturn( &pxReadyTasksLists[ 3 ],
                                              &( taskHandle->xStateListItem ),
                                              pdFALSE );
@@ -1677,7 +1677,7 @@ void test_vTaskPrioritySet_success_lt_curr_prio_diff_base( void )
     ptcb = ( TCB_t * ) taskHandle;
     TEST_ASSERT_EQUAL_PTR( pxCurrentTCB, taskHandle2 );
     /* task handle will inherit the priorit of taskHandle2 */
-    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( 0x80000000UL );
+    listGET_LIST_ITEM_VALUE_ExpectAnyArgsAndReturn( taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listIS_CONTAINED_WITHIN_ExpectAndReturn( &pxReadyTasksLists[ 3 ],
                                              &( taskHandle->xStateListItem ),
                                              pdFALSE );
@@ -2432,6 +2432,199 @@ void test_xTaskDelayUntil_success_yield_already( void )
     /* Validations */
     ASSERT_PORT_YIELD_WITHIN_API_CALLED();
     TEST_ASSERT_TRUE( ret_xtask_delay );
+}
+
+/* Test the scenario that no tick has elapsed since the previous wake time. The
+ * task blocks for a full time increment and the previous wake time is left
+ * untouched. */
+void test_xTaskPeriodicDelay_success_no_ticks_elapsed( void )
+{
+    TickType_t ret_increments;
+    TickType_t previousWakeTime = xTickCount; /* 500 */
+    TickType_t xTimeIncrement = 5;
+    TaskHandle_t task_handle;
+
+    /* Setup */
+    task_handle = create_task();
+    ptcb = ( TCB_t * ) task_handle;
+    TEST_ASSERT_EQUAL( pxCurrentTCB, ptcb );
+    /* Expectations */
+    /* prvAddCurrentTaskToDelayedList */
+    uxListRemove_ExpectAndReturn( &ptcb->xStateListItem, 0 );
+    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xStateListItem, xTickCount + xTimeIncrement );
+    vListInsert_Expect( pxDelayedTaskList, &ptcb->xStateListItem );
+    /* xTaskResumeAll */
+    listLIST_IS_EMPTY_ExpectAndReturn( &xPendingReadyList, pdTRUE );
+    /* API Call */
+    ret_increments = xTaskPeriodicDelay( &previousWakeTime, xTimeIncrement );
+    /* Validations */
+    ASSERT_PORT_YIELD_WITHIN_API_CALLED();
+    TEST_ASSERT_EQUAL( 0, ret_increments );
+    TEST_ASSERT_EQUAL( 500, previousWakeTime );
+}
+
+/* Test the scenario that exactly one time increment has elapsed since the
+ * previous wake time, which is the common case for a task running at a fixed
+ * frequency. */
+void test_xTaskPeriodicDelay_success_one_increment_elapsed( void )
+{
+    TickType_t ret_increments;
+    TickType_t previousWakeTime = xTickCount - 5; /* 500 - 5 = 495 */
+    TickType_t xTimeIncrement = 5;
+    TaskHandle_t task_handle;
+
+    /* Setup */
+    task_handle = create_task();
+    ptcb = ( TCB_t * ) task_handle;
+    TEST_ASSERT_EQUAL( pxCurrentTCB, ptcb );
+    /* Expectations */
+    /* prvAddCurrentTaskToDelayedList */
+    uxListRemove_ExpectAndReturn( &ptcb->xStateListItem, 0 );
+    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xStateListItem, xTickCount + xTimeIncrement );
+    vListInsert_Expect( pxDelayedTaskList, &ptcb->xStateListItem );
+    /* xTaskResumeAll */
+    listLIST_IS_EMPTY_ExpectAndReturn( &xPendingReadyList, pdTRUE );
+    /* API Call */
+    ret_increments = xTaskPeriodicDelay( &previousWakeTime, xTimeIncrement );
+    /* Validations */
+    ASSERT_PORT_YIELD_WITHIN_API_CALLED();
+    TEST_ASSERT_EQUAL( 1, ret_increments );
+    TEST_ASSERT_EQUAL( 500, previousWakeTime );
+}
+
+/* Test the scenario that more than one, but not a whole number of, time
+ * increments have elapsed since the previous wake time. Only the whole
+ * increments are added to the previous wake time and the task blocks for the
+ * remainder of the current increment. */
+void test_xTaskPeriodicDelay_success_partial_increment_elapsed( void )
+{
+    TickType_t ret_increments;
+    TickType_t previousWakeTime = xTickCount - 7; /* 500 - 7 = 493 */
+    TickType_t xTimeIncrement = 5;
+    TaskHandle_t task_handle;
+
+    /* Setup */
+    task_handle = create_task();
+    ptcb = ( TCB_t * ) task_handle;
+    TEST_ASSERT_EQUAL( pxCurrentTCB, ptcb );
+    /* Expectations */
+    /* prvAddCurrentTaskToDelayedList */
+    uxListRemove_ExpectAndReturn( &ptcb->xStateListItem, 0 );
+    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xStateListItem, xTickCount + 3 );
+    vListInsert_Expect( pxDelayedTaskList, &ptcb->xStateListItem );
+    /* xTaskResumeAll */
+    listLIST_IS_EMPTY_ExpectAndReturn( &xPendingReadyList, pdTRUE );
+    /* API Call */
+    ret_increments = xTaskPeriodicDelay( &previousWakeTime, xTimeIncrement );
+    /* Validations */
+    ASSERT_PORT_YIELD_WITHIN_API_CALLED();
+    TEST_ASSERT_EQUAL( 1, ret_increments );
+    TEST_ASSERT_EQUAL( 498, previousWakeTime );
+}
+
+/* Test the scenario that several time increments have elapsed since the
+ * previous wake time, as happens when the task is not resumed in time. All the
+ * skipped increments are caught up at once. */
+void test_xTaskPeriodicDelay_success_multiple_increments_elapsed( void )
+{
+    TickType_t ret_increments;
+    TickType_t previousWakeTime = xTickCount - 12; /* 500 - 12 = 488 */
+    TickType_t xTimeIncrement = 5;
+    TaskHandle_t task_handle;
+
+    /* Setup */
+    task_handle = create_task();
+    ptcb = ( TCB_t * ) task_handle;
+    TEST_ASSERT_EQUAL( pxCurrentTCB, ptcb );
+    /* Expectations */
+    /* prvAddCurrentTaskToDelayedList */
+    uxListRemove_ExpectAndReturn( &ptcb->xStateListItem, 0 );
+    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xStateListItem, xTickCount + 3 );
+    vListInsert_Expect( pxDelayedTaskList, &ptcb->xStateListItem );
+    /* xTaskResumeAll */
+    listLIST_IS_EMPTY_ExpectAndReturn( &xPendingReadyList, pdTRUE );
+    /* API Call */
+    ret_increments = xTaskPeriodicDelay( &previousWakeTime, xTimeIncrement );
+    /* Validations */
+    ASSERT_PORT_YIELD_WITHIN_API_CALLED();
+    TEST_ASSERT_EQUAL( 2, ret_increments );
+    TEST_ASSERT_EQUAL( 498, previousWakeTime );
+}
+
+/* Test the scenario that the time at which the task must be woken overflows.
+ * The task is added to the overflow delayed task list. */
+void test_xTaskPeriodicDelay_success_wake_time_overflow( void )
+{
+    TickType_t ret_increments;
+    TickType_t previousWakeTime = xTickCount - 3; /* 500 - 3 = 497 */
+    TickType_t xTimeIncrement = UINT32_MAX;
+    TaskHandle_t task_handle;
+
+    /* Setup */
+    task_handle = create_task();
+    ptcb = ( TCB_t * ) task_handle;
+    TEST_ASSERT_EQUAL( pxCurrentTCB, ptcb );
+    /* Expectations */
+    /* prvAddCurrentTaskToDelayedList */
+    uxListRemove_ExpectAndReturn( &ptcb->xStateListItem, 0 );
+    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xStateListItem, previousWakeTime - 1 );
+    vListInsert_Expect( pxOverflowDelayedTaskList, &ptcb->xStateListItem );
+    /* xTaskResumeAll */
+    listLIST_IS_EMPTY_ExpectAndReturn( &xPendingReadyList, pdTRUE );
+    /* API Call */
+    ret_increments = xTaskPeriodicDelay( &previousWakeTime, xTimeIncrement );
+    /* Validations */
+    ASSERT_PORT_YIELD_WITHIN_API_CALLED();
+    TEST_ASSERT_EQUAL( 0, ret_increments );
+    TEST_ASSERT_EQUAL( 497, previousWakeTime );
+}
+
+/* Test the scenario that a higher priority task is added to xPendingReadyList
+ * when the current task calls xTaskPeriodicDelay. The scheduler yields for the
+ * higher priority task in xTaskResumeAll, so xTaskPeriodicDelay does not need
+ * to yield itself. */
+void test_xTaskPeriodicDelay_success_yield_already( void )
+{
+    TickType_t ret_increments;
+    TickType_t previousWakeTime = xTickCount; /* 500 */
+    TickType_t xTimeIncrement = 5;
+    TaskHandle_t task_handle;
+    TaskHandle_t task_handle2;
+
+    /* Setup */
+    create_task_priority = 3;
+    task_handle = create_task();
+
+    /* Create another higher priority task to be added in xPendingReadyList. */
+    create_task_priority = 4;
+    task_handle2 = create_task();
+
+    ptcb = ( TCB_t * ) task_handle;
+    pxCurrentTCB = ( TCB_t * ) task_handle;
+
+    /* Expectations */
+    /* prvAddCurrentTaskToDelayedList */
+    uxListRemove_ExpectAndReturn( &ptcb->xStateListItem, 0 );
+    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xStateListItem, xTickCount + xTimeIncrement );
+    vListInsert_Expect( pxDelayedTaskList, &ptcb->xStateListItem );
+    /* xTaskResumeAll */
+    listLIST_IS_EMPTY_ExpectAndReturn( &xPendingReadyList, pdFALSE );
+    listGET_OWNER_OF_HEAD_ENTRY_ExpectAndReturn( &xPendingReadyList, task_handle2 );
+    listREMOVE_ITEM_Expect( &( task_handle2->xEventListItem ) );
+    listREMOVE_ITEM_Expect( &( task_handle2->xStateListItem ) );
+    /* prvAddTaskToReadyList */
+    listINSERT_END_Expect( &pxReadyTasksLists[ task_handle2->uxPriority ],
+                           &task_handle2->xStateListItem );
+    /* back to xTaskResumeAll */
+    listLIST_IS_EMPTY_ExpectAndReturn( &xPendingReadyList, pdTRUE );
+    /* prvResetNextTaskUnblockTime */
+    listLIST_IS_EMPTY_ExpectAndReturn( pxDelayedTaskList, pdTRUE );
+    /* API Call */
+    ret_increments = xTaskPeriodicDelay( &previousWakeTime, xTimeIncrement );
+    /* Validations */
+    ASSERT_PORT_YIELD_WITHIN_API_CALLED();
+    TEST_ASSERT_EQUAL( 0, ret_increments );
+    TEST_ASSERT_EQUAL( 500, previousWakeTime );
 }
 
 /* ----------------------- testing INCLUDE_vTaskSuspend ----------------------*/
@@ -3884,7 +4077,7 @@ void test_vTaskPlaceOnUnorderedEventList( void )
     uxSchedulerSuspended = pdTRUE;
 
     /* Expectations */
-    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xEventListItem, 32 | 0x80000000UL );
+    listSET_LIST_ITEM_VALUE_Expect( &ptcb->xEventListItem, 32 | taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listINSERT_END_Expect( &eventList, &ptcb->xEventListItem );
     /* prvAddCurrentTaskToDelayedList */
     uxListRemove_ExpectAndReturn( &ptcb->xStateListItem, 1 );
@@ -4031,7 +4224,7 @@ void test_vTaskRemoveFromUnorderedEventList( void )
     ptcb = task_handle;
 
     /* Expectations */
-    listSET_LIST_ITEM_VALUE_Expect( &list_item, xItemValue | 0x80000000UL );
+    listSET_LIST_ITEM_VALUE_Expect( &list_item, xItemValue | taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listGET_LIST_ITEM_OWNER_ExpectAndReturn( &list_item, tcb );
     listREMOVE_ITEM_Expect( &list_item );
     /* prvResetNextTaskUnblockTime */
@@ -4069,7 +4262,7 @@ void test_vTaskRemoveFromUnorderedEventList_yielding( void )
     TEST_ASSERT_EQUAL( task_handle2, pxCurrentTCB );
 
     /* Expectations */
-    listSET_LIST_ITEM_VALUE_Expect( &list_item, xItemValue | 0x80000000UL );
+    listSET_LIST_ITEM_VALUE_Expect( &list_item, xItemValue | taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listGET_LIST_ITEM_OWNER_ExpectAndReturn( &list_item, tcb );
     /*uxListRemove_ExpectAndReturn( &list_item, pdTRUE ); */
     listREMOVE_ITEM_Expect( &( list_item ) );
@@ -4813,35 +5006,67 @@ void test_vTaskPriorityDisinheritAfterTimeout_fail_null_handle()
 void test_vTaskPriorityDisinheritAfterTimeout_success()
 {
     TaskHandle_t mutex_holder;
+    UBaseType_t inheritedPriority = 5U;
+    /* Tasks at priority 1-3 are ready */
+    UBaseType_t lowPriorityTasksReady = ( UBaseType_t ) ( ( 1 << 1 ) | ( 1 << 2 ) | ( 1 << 3 ) );
 
     /* Setup */
     create_task_priority = 4;
     mutex_holder = create_task();
     mutex_holder->uxMutexesHeld = 1;
+    mutex_holder->uxPriority = inheritedPriority;
+    /* Now mark task priority 5 as ready */
+    uxTopReadyPriority = ( UBaseType_t ) ( ( 1 << inheritedPriority ) | lowPriorityTasksReady );
     /* Expectations */
+    listGET_LIST_ITEM_VALUE_ExpectAndReturn( &mutex_holder->xEventListItem, taskEVENT_LIST_ITEM_VALUE_IN_USE );
+    listIS_CONTAINED_WITHIN_ExpectAndReturn( &pxReadyTasksLists[ inheritedPriority ],
+                                             &mutex_holder->xStateListItem,
+                                             pdTRUE );
+    uxListRemove_ExpectAndReturn( &mutex_holder->xStateListItem, 0 );
+    /* prvAddTaskToReadyList */
+    listINSERT_END_Expect( &pxReadyTasksLists[ mutex_holder->uxBasePriority ],
+                           &mutex_holder->xStateListItem );
     /* API Call */
     vTaskPriorityDisinheritAfterTimeout( mutex_holder,
                                          create_task_priority - 1 );
     /* Validations */
     TEST_ASSERT_EQUAL( create_task_priority, mutex_holder->uxPriority );
     TEST_ASSERT_EQUAL( create_task_priority, mutex_holder->uxBasePriority );
+    /* Priority is reset back to 4, we should expect tasks 4-1 to be ready */
+    TEST_ASSERT_EQUAL( uxTopReadyPriority, ( UBaseType_t ) ( ( 1 << create_task_priority ) | lowPriorityTasksReady ) );
 }
 
 void test_vTaskPriorityDisinheritAfterTimeout_success2()
 {
     TaskHandle_t mutex_holder;
+    UBaseType_t inheritedPriority = 6U;
+    /* Task at priority 5 is ready */
+    UBaseType_t priorityFiveTaskReady = ( UBaseType_t ) ( 1 << 5 );
 
     /* Setup */
     create_task_priority = 4;
     mutex_holder = create_task();
     mutex_holder->uxMutexesHeld = 1;
+    mutex_holder->uxPriority = inheritedPriority;
+    /* Now mark task priority 6 as ready */
+    uxTopReadyPriority = ( UBaseType_t ) ( ( 1 << inheritedPriority ) | priorityFiveTaskReady );
     /* Expectations */
+    listGET_LIST_ITEM_VALUE_ExpectAndReturn( &mutex_holder->xEventListItem, taskEVENT_LIST_ITEM_VALUE_IN_USE );
+    listIS_CONTAINED_WITHIN_ExpectAndReturn( &pxReadyTasksLists[ inheritedPriority ],
+                                             &mutex_holder->xStateListItem,
+                                             pdTRUE );
+    uxListRemove_ExpectAndReturn( &mutex_holder->xStateListItem, 0 );
+    /* prvAddTaskToReadyList */
+    listINSERT_END_Expect( &pxReadyTasksLists[ mutex_holder->uxBasePriority ],
+                           &mutex_holder->xStateListItem );
     /* API Call */
     vTaskPriorityDisinheritAfterTimeout( mutex_holder,
                                          create_task_priority );
     /* Validations */
     TEST_ASSERT_EQUAL( create_task_priority, mutex_holder->uxPriority );
     TEST_ASSERT_EQUAL( create_task_priority, mutex_holder->uxBasePriority );
+    /* Priority is reset back to 4, we should expect tasks 5-4 to be ready */
+    TEST_ASSERT_EQUAL( uxTopReadyPriority, ( UBaseType_t ) ( ( 1 << create_task_priority ) | priorityFiveTaskReady ) );
 }
 
 void test_vTaskPriorityDisinheritAfterTimeout_success3()
@@ -4870,7 +5095,7 @@ void test_vTaskPriorityDisinheritAfterTimeout_success4()
     mutex_holder = create_task();
     mutex_holder->uxMutexesHeld = 1;
     /* Expectations */
-    listGET_LIST_ITEM_VALUE_ExpectAndReturn( &mutex_holder->xEventListItem, 0x80000000UL );
+    listGET_LIST_ITEM_VALUE_ExpectAndReturn( &mutex_holder->xEventListItem, taskEVENT_LIST_ITEM_VALUE_IN_USE );
     listIS_CONTAINED_WITHIN_ExpectAndReturn( &pxReadyTasksLists[ mutex_holder->uxPriority ],
                                              &mutex_holder->xStateListItem,
                                              pdFALSE );

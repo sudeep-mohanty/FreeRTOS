@@ -37,6 +37,33 @@
 #include "task.h"
 #include "semphr.h"
 
+/* Bounded wait for this task's own priority to reach the expected value.
+ * Under configRUN_MULTIPLE_PRIORITIES == 1 + dual-core SMP, a peer's
+ * mutex operation that triggers priority inheritance / disinheritance
+ * runs in parallel on the other core, so a snapshot read from this task
+ * may observe the priority before it has settled. */
+#if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+    static BaseType_t prvWaitForOwnPriority( UBaseType_t uxExpected )
+    {
+        TickType_t xStart = xTaskGetTickCount();
+
+        while( uxTaskPriorityGet( NULL ) != uxExpected )
+        {
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                return pdFAIL;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        return pdPASS;
+    }
+    #define intsemCHECK_OWN_PRIORITY( uxExpected )    ( prvWaitForOwnPriority( ( uxExpected ) ) == pdPASS )
+#else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+    #define intsemCHECK_OWN_PRIORITY( uxExpected )    ( uxTaskPriorityGet( NULL ) == ( uxExpected ) )
+#endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+
 /* Demo program include files. */
 #include "IntSemTest.h"
 
@@ -123,7 +150,7 @@ static SemaphoreHandle_t xMasterSlaveMutex = NULL;
 static BaseType_t xOkToGiveMutex = pdFALSE, xOkToGiveCountingSemaphore = pdFALSE;
 
 /* Used to coordinate timing between tasks and the interrupt. */
-const TickType_t xInterruptGivePeriod = pdMS_TO_TICKS( intsemINTERRUPT_MUTEX_GIVE_PERIOD_MS );
+static const TickType_t xInterruptGivePeriod = pdMS_TO_TICKS( intsemINTERRUPT_MUTEX_GIVE_PERIOD_MS );
 
 /*-----------------------------------------------------------*/
 
@@ -182,7 +209,7 @@ static void prvTakeAndGiveInTheSameOrder( void )
     }
     #endif /* INCLUDE_eTaskGetState */
 
-    if( uxTaskPriorityGet( NULL ) != intsemMASTER_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemMASTER_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -198,8 +225,28 @@ static void prvTakeAndGiveInTheSameOrder( void )
     vTaskResume( xSlaveHandle );
 
     /* The slave has the higher priority so should now have executed and
-     * blocked on the semaphore. */
-    #if ( INCLUDE_eTaskGetState == 1 )
+     * blocked on the semaphore.
+     *
+     * The eTaskGetState() check below is intentionally guarded with
+     * configNUMBER_OF_CORES == 1.  On SMP, even with
+     * configRUN_MULTIPLE_PRIORITIES == 0, this check is racy:
+     *   - Slave woke up via vTaskResume() and is running xSemaphoreTake()
+     *     on the other core.
+     *   - Inside xSemaphoreTake(), priority inheritance boosts this task
+     *     (the mutex holder) up to the slave's priority BEFORE the slave
+     *     calls vTaskPlaceOnEventList().
+     *   - At that moment both tasks are at the same priority, so SMP can
+     *     legitimately run them concurrently on different cores.  This task
+     *     resumes (now at inherited priority) and reads the slave's state
+     *     while the slave is still physically executing the remaining few
+     *     instructions of xSemaphoreTake() before transitioning to eBlocked.
+     *   - eTaskGetState() correctly reports eRunning during that in-flight
+     *     transition.
+     * The priority inheritance check below (uxTaskPriorityGet(NULL) ==
+     * intsemSLAVE_PRIORITY) is the primary verification and is sufficient
+     * to prove the slave entered the blocking path: priority inheritance
+     * only happens inside xSemaphoreTake() when the mutex is contended. */
+    #if ( INCLUDE_eTaskGetState == 1 ) && ( configNUMBER_OF_CORES == 1 )
     {
         configASSERT( eTaskGetState( xSlaveHandle ) == eBlocked );
     }
@@ -207,7 +254,7 @@ static void prvTakeAndGiveInTheSameOrder( void )
 
     /* This task should now have inherited the priority of the slave
      * task. */
-    if( uxTaskPriorityGet( NULL ) != intsemSLAVE_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemSLAVE_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -231,7 +278,7 @@ static void prvTakeAndGiveInTheSameOrder( void )
     }
 
     /* Should still be at the priority of the slave task. */
-    if( uxTaskPriorityGet( NULL ) != intsemSLAVE_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemSLAVE_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -244,7 +291,7 @@ static void prvTakeAndGiveInTheSameOrder( void )
         xErrorDetected = __LINE__;
     }
 
-    if( uxTaskPriorityGet( NULL ) != intsemSLAVE_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemSLAVE_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -258,7 +305,7 @@ static void prvTakeAndGiveInTheSameOrder( void )
         xErrorDetected = __LINE__;
     }
 
-    if( uxTaskPriorityGet( NULL ) != intsemMASTER_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemMASTER_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -284,7 +331,7 @@ static void prvTakeAndGiveInTheOppositeOrder( void )
     }
     #endif /* INCLUDE_eTaskGetState */
 
-    if( uxTaskPriorityGet( NULL ) != intsemMASTER_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemMASTER_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -300,8 +347,28 @@ static void prvTakeAndGiveInTheOppositeOrder( void )
     vTaskResume( xSlaveHandle );
 
     /* The slave has the higher priority so should now have executed and
-     * blocked on the semaphore. */
-    #if ( INCLUDE_eTaskGetState == 1 )
+     * blocked on the semaphore.
+     *
+     * The eTaskGetState() check below is intentionally guarded with
+     * configNUMBER_OF_CORES == 1.  On SMP, even with
+     * configRUN_MULTIPLE_PRIORITIES == 0, this check is racy:
+     *   - Slave woke up via vTaskResume() and is running xSemaphoreTake()
+     *     on the other core.
+     *   - Inside xSemaphoreTake(), priority inheritance boosts this task
+     *     (the mutex holder) up to the slave's priority BEFORE the slave
+     *     calls vTaskPlaceOnEventList().
+     *   - At that moment both tasks are at the same priority, so SMP can
+     *     legitimately run them concurrently on different cores.  This task
+     *     resumes (now at inherited priority) and reads the slave's state
+     *     while the slave is still physically executing the remaining few
+     *     instructions of xSemaphoreTake() before transitioning to eBlocked.
+     *   - eTaskGetState() correctly reports eRunning during that in-flight
+     *     transition.
+     * The priority inheritance check below (uxTaskPriorityGet(NULL) ==
+     * intsemSLAVE_PRIORITY) is the primary verification and is sufficient
+     * to prove the slave entered the blocking path: priority inheritance
+     * only happens inside xSemaphoreTake() when the mutex is contended. */
+    #if ( INCLUDE_eTaskGetState == 1 ) && ( configNUMBER_OF_CORES == 1 )
     {
         configASSERT( eTaskGetState( xSlaveHandle ) == eBlocked );
     }
@@ -309,7 +376,7 @@ static void prvTakeAndGiveInTheOppositeOrder( void )
 
     /* This task should now have inherited the priority of the slave
      * task. */
-    if( uxTaskPriorityGet( NULL ) != intsemSLAVE_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemSLAVE_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -333,7 +400,7 @@ static void prvTakeAndGiveInTheOppositeOrder( void )
     }
 
     /* Should still be at the priority of the slave task. */
-    if( uxTaskPriorityGet( NULL ) != intsemSLAVE_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemSLAVE_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -349,7 +416,7 @@ static void prvTakeAndGiveInTheOppositeOrder( void )
     /* Should still be at the priority of the slave task as this task still
      * holds one semaphore (this is a simplification in the priority inheritance
      * mechanism. */
-    if( uxTaskPriorityGet( NULL ) != intsemSLAVE_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemSLAVE_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -361,7 +428,7 @@ static void prvTakeAndGiveInTheOppositeOrder( void )
         xErrorDetected = __LINE__;
     }
 
-    if( uxTaskPriorityGet( NULL ) != intsemMASTER_PRIORITY )
+    if( !intsemCHECK_OWN_PRIORITY( intsemMASTER_PRIORITY ) )
     {
         xErrorDetected = __LINE__;
     }
@@ -485,8 +552,25 @@ void vInterruptSemaphorePeriodicTest( void )
              * in the other gives for code coverage reasons. */
             xSemaphoreGiveFromISR( xISRMutex, NULL );
 
-            /* Second give attempt should fail. */
-            configASSERT( xSemaphoreGiveFromISR( xISRMutex, &xHigherPriorityTaskWoken ) == pdFAIL );
+            /* Second give attempt should fail.
+             *
+             * The configASSERT below is intentionally guarded with
+             * configNUMBER_OF_CORES == 1.  On SMP the give above can wake
+             * the slave task (blocked on xISRMutex) on the other core via a
+             * cross-core IPI; that core can run the slave and take the
+             * mutex BEFORE this ISR reaches the second give.  When that
+             * happens the second xSemaphoreGiveFromISR() succeeds (mutex
+             * is empty again) and the assert trips even though both ISR
+             * operations were correct in isolation. */
+            #if ( configNUMBER_OF_CORES == 1 )
+            {
+                configASSERT( xSemaphoreGiveFromISR( xISRMutex, &xHigherPriorityTaskWoken ) == pdFAIL );
+            }
+            #else
+            {
+                ( void ) xSemaphoreGiveFromISR( xISRMutex, &xHigherPriorityTaskWoken );
+            }
+            #endif
         }
 
         if( xOkToGiveCountingSemaphore != pdFALSE )

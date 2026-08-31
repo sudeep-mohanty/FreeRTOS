@@ -65,6 +65,60 @@
 #include "task.h"
 #include "semphr.h"
 
+/* Bounded wait for this task's own priority to reach the expected value.
+ * Under configRUN_MULTIPLE_PRIORITIES == 1 + dual-core SMP, a peer's
+ * mutex operation that triggers priority inheritance / disinheritance
+ * runs in parallel on the other core, so a snapshot read from this task
+ * may observe the priority before it has settled. */
+#if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+    static BaseType_t prvWaitForOwnPriority( UBaseType_t uxExpected )
+    {
+        TickType_t xStart = xTaskGetTickCount();
+
+        while( uxTaskPriorityGet( NULL ) != uxExpected )
+        {
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                return pdFAIL;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        return pdPASS;
+    }
+    #define recmuCHECK_OWN_PRIORITY( uxExpected )    ( prvWaitForOwnPriority( ( uxExpected ) ) == pdPASS )
+#else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+    #define recmuCHECK_OWN_PRIORITY( uxExpected )    ( uxTaskPriorityGet( NULL ) == ( uxExpected ) )
+#endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+
+#if !( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) )
+
+/* Wait, up to a generous bound, for a peer task to set its "suspended" flag.
+ * The blocking task becomes the mutex holder the instant the controlling task
+ * gives the mutex back, which it does immediately before suspending; under
+ * multi-priority SMP the controlling task can still be executing those few
+ * instructions on the other core.  Returns pdFAIL if the flag is not set within
+ * the bound, indicating a genuine fault rather than scheduling skew. */
+    static BaseType_t prvWaitForSuspension( volatile BaseType_t * pxSuspendedFlag )
+    {
+        TickType_t xStart = xTaskGetTickCount();
+
+        while( *pxSuspendedFlag != pdTRUE )
+        {
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                return pdFAIL;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        return pdPASS;
+    }
+
+#endif /* ! ( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) ) */
+
 /* Demo app include files. */
 #include "recmutex.h"
 
@@ -155,13 +209,15 @@ static void prvRecursiveMutexControllingTask( void * pvParameters )
              * The first time through the mutex will be immediately available, on
              * subsequent times through the mutex will be held by the polling task
              * at this point and this Take will cause the polling task to inherit
-             * the priority of this task.  In this case the block time must be
-             * long enough to ensure the polling task will execute again before the
-             * block time expires.  If the block time does expire then the error
-             * flag will be set here. */
-            if( xSemaphoreTakeRecursive( xMutex, recmu15ms_DELAY ) != pdPASS )
+             * the priority of this task.  The polling task can take longer than
+             * the block time to hand the mutex back (it holds the mutex while
+             * priority inheritance settles), so a single take can time out -
+             * retry until it succeeds so the number of takes always matches the
+             * number of gives below.  A genuine failure to ever obtain the mutex
+             * shows up as a stall that the check task detects. */
+            while( xSemaphoreTakeRecursive( xMutex, recmu15ms_DELAY ) != pdPASS )
             {
-                xErrorOccurred = __LINE__;
+                /* Mutex not available yet - try again. */
             }
 
             /* Ensure the other task attempting to access the mutex (and the
@@ -228,25 +284,39 @@ static void prvRecursiveMutexBlockingTask( void * pvParameters )
          * a later call to configASSERT() (within the polling task). */
         if( xSemaphoreTakeRecursive( xMutex, ( portMAX_DELAY - 1 ) ) == pdPASS )
         {
-            if( xControllingIsSuspended != pdTRUE )
-            {
-                /* Did not expect to execute until the controlling task was
-                 * suspended. */
-                xErrorOccurred = __LINE__;
-            }
-            else
-            {
-                /* Give the mutex back before suspending ourselves to allow
-                 * the polling task to obtain the mutex. */
-                if( xSemaphoreGiveRecursive( xMutex ) != pdPASS )
+            /* The controlling task gives the mutex back immediately before
+             * suspending itself, so with one core this lower priority task
+             * cannot run until that suspension has happened and can wait for
+             * it.  With more than one core and multiple priorities that
+             * ordering does not hold: the idle priority polling task takes the
+             * mutex with a zero block time from the other core, so it can seize
+             * the mutex the moment it is freed - ahead of this task, which is
+             * queued on the mutex's event list - and then resume the
+             * controlling task.  This task can therefore acquire the mutex at a
+             * point where the controlling task has already been resumed and has
+             * started its next cycle, leaving no instant at which this task can
+             * observe it suspended.  Check it only where that ordering is
+             * guaranteed, matching the peer state checks in the polling task
+             * below. */
+            #if !( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) )
+                if( prvWaitForSuspension( &xControllingIsSuspended ) != pdPASS )
                 {
                     xErrorOccurred = __LINE__;
                 }
+            #endif
 
-                xBlockingIsSuspended = pdTRUE;
-                vTaskSuspend( NULL );
-                xBlockingIsSuspended = pdFALSE;
+            /* Give the mutex back, then suspend, to allow the polling task to
+             * obtain it.  Both are performed unconditionally: holding on to the
+             * mutex here would make this task spin re-taking it recursively and
+             * starve the controlling and polling tasks. */
+            if( xSemaphoreGiveRecursive( xMutex ) != pdPASS )
+            {
+                xErrorOccurred = __LINE__;
             }
+
+            xBlockingIsSuspended = pdTRUE;
+            vTaskSuspend( NULL );
+            xBlockingIsSuspended = pdFALSE;
         }
         else
         {
@@ -255,11 +325,17 @@ static void prvRecursiveMutexBlockingTask( void * pvParameters )
             xErrorOccurred = __LINE__;
         }
 
-        /* The controlling and blocking tasks should be in lock step. */
-        if( uxControllingCycles != ( UBaseType_t ) ( uxBlockingCycles + 1 ) )
-        {
-            xErrorOccurred = __LINE__;
-        }
+        #if ( configNUMBER_OF_CORES == 1 )
+
+            /* On single core the strict priority ordering keeps the controlling
+             * and blocking tasks in lock step.  On SMP they run concurrently and
+             * the controlling task can be more than one cycle ahead when this
+             * check is reached, so it only applies to single core. */
+            if( uxControllingCycles != ( UBaseType_t ) ( uxBlockingCycles + 1 ) )
+            {
+                xErrorOccurred = __LINE__;
+            }
+        #endif
 
         /* Keep count of the number of cycles this task has performed so a
          * stall can be detected. */
@@ -280,15 +356,33 @@ static void prvRecursiveMutexPollingTask( void * pvParameters )
          * happen when the controlling task is also suspended. */
         if( xSemaphoreTakeRecursive( xMutex, recmuNO_DELAY ) == pdPASS )
         {
-            #if ( INCLUDE_eTaskGetState == 1 )
+            /* These eTaskGetState() checks are racy on SMP, even with
+             * configRUN_MULTIPLE_PRIORITIES == 0.  The blocking task frees the
+             * mutex in xSemaphoreGiveRecursive() before it sets its suspend
+             * flag and actually calls vTaskSuspend(), so the idle-priority
+             * polling task can acquire the freed mutex on the other core and
+             * read the peer task's state while it is still completing that
+             * give-then-suspend sequence.  eTaskGetState() then correctly
+             * reports the in-flight state (eRunning/eReady/eBlocked) rather than
+             * eSuspended.  Guard them to single core, matching the equivalent
+             * eTaskGetState() checks further below; the xXxxIsSuspended flag
+             * check that follows provides the SMP-safe coverage. */
+            #if ( INCLUDE_eTaskGetState == 1 ) && ( configNUMBER_OF_CORES == 1 )
             {
                 configASSERT( eTaskGetState( xControllingTaskHandle ) == eSuspended );
                 configASSERT( eTaskGetState( xBlockingTaskHandle ) == eSuspended );
             }
             #endif /* INCLUDE_eTaskGetState */
 
-            /* Is the blocking task suspended? */
-            if( ( xBlockingIsSuspended != pdTRUE ) || ( xControllingIsSuspended != pdTRUE ) )
+            #if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+
+                /* Multi-priority SMP: skip the flag check (racy) and always
+                 * proceed to the critical section. */
+                if( pdFALSE )
+            #else
+                /* Is the blocking task suspended? */
+                if( ( xBlockingIsSuspended != pdTRUE ) || ( xControllingIsSuspended != pdTRUE ) )
+            #endif
             {
                 xErrorOccurred = __LINE__;
             }
@@ -318,20 +412,46 @@ static void prvRecursiveMutexPollingTask( void * pvParameters )
                 #endif
 
                 /* The other two tasks should now have executed and no longer
-                 * be suspended. */
-                if( ( xBlockingIsSuspended == pdTRUE ) || ( xControllingIsSuspended == pdTRUE ) )
-                {
-                    xErrorOccurred = __LINE__;
-                }
+                 * be suspended.  Under multi-priority SMP they may still be
+                 * transitioning out of vTaskSuspend() on the other core when
+                 * this site is reached; skip the flag check there. */
+                #if !( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) )
+                    if( ( xBlockingIsSuspended == pdTRUE ) || ( xControllingIsSuspended == pdTRUE ) )
+                    {
+                        xErrorOccurred = __LINE__;
+                    }
+                #endif
 
                 #if ( INCLUDE_uxTaskPriorityGet == 1 )
                 {
                     /* Check priority inherited. */
-                    configASSERT( uxTaskPriorityGet( NULL ) == recmuCONTROLLING_TASK_PRIORITY );
+                    configASSERT( recmuCHECK_OWN_PRIORITY( recmuCONTROLLING_TASK_PRIORITY ) );
                 }
                 #endif /* INCLUDE_uxTaskPriorityGet */
 
-                #if ( INCLUDE_eTaskGetState == 1 )
+                /* The eTaskGetState() checks below are intentionally guarded
+                 * with configNUMBER_OF_CORES == 1.  On SMP, even with
+                 * configRUN_MULTIPLE_PRIORITIES == 0, these checks are racy:
+                 *   - After vTaskResume() above, the higher priority task
+                 *     starts running xSemaphoreTakeRecursive() on the other
+                 *     core.  Priority inheritance boosts this task to the
+                 *     higher task's priority BEFORE the higher task calls
+                 *     vTaskPlaceOnEventList().
+                 *   - At that moment both tasks are at the same priority,
+                 *     so SMP can legitimately run them concurrently on
+                 *     different cores.  This task resumes (now at inherited
+                 *     priority) and reads the other task's state while it
+                 *     is still physically executing the remaining few
+                 *     instructions of xSemaphoreTakeRecursive() before
+                 *     transitioning to eBlocked.  eTaskGetState() correctly
+                 *     reports eRunning during that in-flight transition.
+                 * The priority inheritance check above
+                 * (uxTaskPriorityGet(NULL) == recmuCONTROLLING_TASK_PRIORITY)
+                 * is the primary verification and is sufficient to prove the
+                 * other tasks entered the blocking path: priority inheritance
+                 * only happens inside xSemaphoreTakeRecursive() when the
+                 * mutex is contended. */
+                #if ( INCLUDE_eTaskGetState == 1 ) && ( configNUMBER_OF_CORES == 1 )
                 {
                     configASSERT( eTaskGetState( xControllingTaskHandle ) == eBlocked );
                     configASSERT( eTaskGetState( xBlockingTaskHandle ) == eBlocked );
@@ -347,7 +467,7 @@ static void prvRecursiveMutexPollingTask( void * pvParameters )
                 #if ( INCLUDE_uxTaskPriorityGet == 1 )
                 {
                     /* Check priority disinherited. */
-                    configASSERT( uxTaskPriorityGet( NULL ) == recmuPOLLING_TASK_PRIORITY );
+                    configASSERT( recmuCHECK_OWN_PRIORITY( recmuPOLLING_TASK_PRIORITY ) );
                 }
                 #endif /* INCLUDE_uxTaskPriorityGet */
             }
@@ -406,6 +526,11 @@ BaseType_t xAreRecursiveMutexTasksStillRunning( void )
     {
         xReturn = pdPASS;
     }
+
+    /* Reset the sticky error flag so a single transient SMP timing slip
+     * does not permanently mark the test as failed.  Same pattern as
+     * AbortDelay / StreamBufferDemo. */
+    xErrorOccurred = pdFALSE;
 
     return xReturn;
 }

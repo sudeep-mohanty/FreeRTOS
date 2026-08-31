@@ -79,7 +79,7 @@ const uint32_t* isr_vector[] __attribute__((section(".isr_vector"), used)) =
 
 void Reset_Handler( void )
 {
-    main();
+    (void) main();
 }
 
 /* Variables used to store the value of registers at the time a hardfault
@@ -97,7 +97,7 @@ volatile uint32_t psr;/* Program status register. */
 /* Called from the hardfault handler to provide information on the processor
  * state at the time of the fault.
  */
-__attribute__( ( used ) ) void prvGetRegistersFromStack( uint32_t *pulFaultStackAddress )
+static __attribute__( ( used ) ) void prvGetRegistersFromStack( uint32_t *pulFaultStackAddress )
 {
     r0 = pulFaultStackAddress[ 0 ];
     r1 = pulFaultStackAddress[ 1 ];

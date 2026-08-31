@@ -46,6 +46,33 @@
 /* Demo program include files. */
 #include "GenQTest.h"
 
+/* Bounded wait for this task's own priority to reach the expected value.
+ * Under configRUN_MULTIPLE_PRIORITIES == 1 + dual-core SMP, a peer's
+ * mutex operation that triggers priority inheritance / disinheritance
+ * runs in parallel on the other core, so a snapshot read from this task
+ * may observe the priority before it has settled. */
+#if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+    static BaseType_t prvWaitForOwnPriority( UBaseType_t uxExpected )
+    {
+        TickType_t xStart = xTaskGetTickCount();
+
+        while( uxTaskPriorityGet( NULL ) != uxExpected )
+        {
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                return pdFAIL;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        return pdPASS;
+    }
+    #define genqCHECK_OWN_PRIORITY( uxExpected )    ( prvWaitForOwnPriority( ( uxExpected ) ) == pdPASS )
+#else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+    #define genqCHECK_OWN_PRIORITY( uxExpected )    ( uxTaskPriorityGet( NULL ) == ( uxExpected ) )
+#endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+
 #define genqQUEUE_LENGTH                      ( 5 )
 #define intsemNO_BLOCK                        ( 0 )
 #define genqSHORT_BLOCK                       ( pdMS_TO_TICKS( 2 ) )
@@ -139,8 +166,17 @@ static TaskHandle_t xHighPriorityMutexTask, xMediumPriorityMutexTask;
 
 /* Lets the high priority semaphore task know that its wait for the semaphore
  * was aborted, in which case not being able to obtain the semaphore is not to be
- * considered an error. */
+ * considered an error.  prvHighPriorityMutexTask() runs as two tasks whose block
+ * times the low priority task aborts one after the other, so each task has its
+ * own flag.  A single shared flag is only safe while the aborted task always
+ * runs to completion, consuming the flag, before the low priority task sets it
+ * again for the other task - which stops holding once both can run at the same
+ * time on different cores, where the first task's consume can land after the set
+ * meant for the second and so discard it. */
 static volatile BaseType_t xBlockWasAborted = pdFALSE;
+#if ( INCLUDE_xTaskAbortDelay == 1 )
+    static volatile BaseType_t xSecondBlockWasAborted = pdFALSE;
+#endif
 
 /*-----------------------------------------------------------*/
 
@@ -436,6 +472,38 @@ static void prvSendFrontAndBackTest( void * pvParameters )
 
 #if ( INCLUDE_xTaskAbortDelay == 1 )
 
+/* On SMP (configNUMBER_OF_CORES > 1), a task that was just vTaskResume()'d
+ * and that is contending for a mutex may still be physically executing
+ * xSemaphoreTake() on the other core when this task next runs.  Priority
+ * inheritance boosts this task up to the resumed task's priority BEFORE
+ * the resumed task reaches vTaskPlaceOnEventList(), so both tasks end up
+ * at the same priority and can co-run on different cores
+ * (configRUN_MULTIPLE_PRIORITIES == 0 only prevents lower-priority
+ * co-running with a higher-priority task — it does not prevent equal-
+ * priority co-running).  Result: xTaskAbortDelay() on the resumed task
+ * can race ahead of the in-flight blocking transition and return pdFAIL
+ * because the target is still eRunning rather than eBlocked.
+ *
+ * This helper bridges that race window by polling until the target task
+ * is actually eBlocked before the caller invokes xTaskAbortDelay().  On
+ * single-core it compiles to nothing — the transition is already atomic
+ * from the running task's perspective. */
+    static inline void prvWaitForTaskBlocked( TaskHandle_t xTask )
+    {
+        #if ( configNUMBER_OF_CORES > 1 )
+        {
+            while( eTaskGetState( xTask ) != eBlocked )
+            {
+                vTaskDelay( 1 );
+            }
+        }
+        #else
+        {
+            ( void ) xTask;
+        }
+        #endif
+    }
+
     static void prvHighPriorityTimeout( SemaphoreHandle_t xMutex )
     {
         static UBaseType_t uxLoopCount = 0;
@@ -462,7 +530,7 @@ static void prvSendFrontAndBackTest( void * pvParameters )
 
         /* This task's priority should be as per that assigned when the task was
          * created. */
-        if( uxTaskPriorityGet( NULL ) != genqMUTEX_LOW_PRIORITY )
+        if( !genqCHECK_OWN_PRIORITY( genqMUTEX_LOW_PRIORITY ) )
         {
             xErrorDetected = pdTRUE;
         }
@@ -474,7 +542,7 @@ static void prvSendFrontAndBackTest( void * pvParameters )
         /* This task should now have inherited the priority of the high priority
          * task as by now the high priority task will have attempted to obtain the
          * mutex. */
-        if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+        if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
         {
             xErrorDetected = pdTRUE;
         }
@@ -487,7 +555,7 @@ static void prvSendFrontAndBackTest( void * pvParameters )
         /* This task should still have the priority of the high priority task as
          * that had already been inherited as is the highest priority of the three
          * tasks using the mutex. */
-        if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+        if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
         {
             xErrorDetected = pdTRUE;
         }
@@ -508,6 +576,8 @@ static void prvSendFrontAndBackTest( void * pvParameters )
          *  task knows that its failure to obtain the semaphore is not an error. */
         xBlockWasAborted = pdTRUE;
 
+        prvWaitForTaskBlocked( xHighPriorityMutexTask );
+
         if( xTaskAbortDelay( xHighPriorityMutexTask ) != pdPASS )
         {
             xErrorDetected = pdTRUE;
@@ -526,10 +596,12 @@ static void prvSendFrontAndBackTest( void * pvParameters )
             vTaskDelay( genqSHORT_BLOCK );
         }
 
-        /* Now force the medium priority task to unblock.  xBlockWasAborted is
-         * set to pdTRUE so the medium priority task knows that its failure to
-         * obtain the semaphore is not an error. */
-        xBlockWasAborted = pdTRUE;
+        /* Now force the medium priority task to unblock.  Its own
+         * xSecondBlockWasAborted is set to pdTRUE so the medium priority task
+         * knows that its failure to obtain the semaphore is not an error. */
+        xSecondBlockWasAborted = pdTRUE;
+
+        prvWaitForTaskBlocked( xSecondMediumPriorityMutexTask );
 
         if( xTaskAbortDelay( xSecondMediumPriorityMutexTask ) != pdPASS )
         {
@@ -575,7 +647,7 @@ static void prvSendFrontAndBackTest( void * pvParameters )
             xErrorDetected = pdTRUE;
         }
 
-        if( uxTaskPriorityGet( NULL ) != genqMUTEX_LOW_PRIORITY )
+        if( !genqCHECK_OWN_PRIORITY( genqMUTEX_LOW_PRIORITY ) )
         {
             xErrorDetected = pdTRUE;
         }
@@ -586,7 +658,7 @@ static void prvSendFrontAndBackTest( void * pvParameters )
 
         /* This time this task should now have inherited the priority of the
          * medium task. */
-        if( uxTaskPriorityGet( NULL ) != genqMUTEX_MEDIUM_PRIORITY )
+        if( !genqCHECK_OWN_PRIORITY( genqMUTEX_MEDIUM_PRIORITY ) )
         {
             xErrorDetected = pdTRUE;
         }
@@ -596,7 +668,7 @@ static void prvSendFrontAndBackTest( void * pvParameters )
 
         /* The high priority task should already have run, causing this task to
          * inherit a priority for the second time. */
-        if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+        if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
         {
             xErrorDetected = pdTRUE;
         }
@@ -606,6 +678,8 @@ static void prvSendFrontAndBackTest( void * pvParameters )
          * lowered down to that of the highest priority task waiting on the mutex,
          * which is the medium priority task. */
         xBlockWasAborted = pdTRUE;
+
+        prvWaitForTaskBlocked( xHighPriorityMutexTask );
 
         if( xTaskAbortDelay( xHighPriorityMutexTask ) != pdPASS )
         {
@@ -622,7 +696,9 @@ static void prvSendFrontAndBackTest( void * pvParameters )
         /* And finally, when the medium priority task also have its delay
          * aborted there are no other tasks waiting for the mutex so this task
          * returns to its base priority. */
-        xBlockWasAborted = pdTRUE;
+        xSecondBlockWasAborted = pdTRUE;
+
+        prvWaitForTaskBlocked( xSecondMediumPriorityMutexTask );
 
         if( xTaskAbortDelay( xSecondMediumPriorityMutexTask ) != pdPASS )
         {
@@ -663,7 +739,7 @@ static void prvTakeTwoMutexesReturnInDifferentOrder( SemaphoreHandle_t xMutex,
 
     /* This task's priority should be as per that assigned when the task was
      * created. */
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_LOW_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_LOW_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -677,8 +753,30 @@ static void prvTakeTwoMutexesReturnInDifferentOrder( SemaphoreHandle_t xMutex,
     #endif
 
     /* Ensure the task is reporting its priority as blocked and not
-     * suspended (as it would have done in versions up to V7.5.3). */
-    #if ( INCLUDE_eTaskGetState == 1 )
+     * suspended (as it would have done in versions up to V7.5.3).
+     *
+     * The eTaskGetState() check below is intentionally guarded with
+     * configNUMBER_OF_CORES == 1.  On SMP, even with
+     * configRUN_MULTIPLE_PRIORITIES == 0, this check is racy:
+     *   - The high-priority task woke up via vTaskResume() above and is
+     *     running xSemaphoreTake() on the other core.
+     *   - Inside xSemaphoreTake(), priority inheritance boosts this task
+     *     (the mutex holder) up to the high-priority task's priority
+     *     BEFORE that task calls vTaskPlaceOnEventList().
+     *   - At that moment both tasks are at the same priority, so SMP can
+     *     legitimately run them concurrently on different cores.  This
+     *     task resumes (now at inherited priority) and reads the other
+     *     task's state while it is still physically executing the
+     *     remaining few instructions of xSemaphoreTake() before
+     *     transitioning to eBlocked.
+     *   - eTaskGetState() correctly reports eRunning during that
+     *     in-flight transition.
+     * The priority inheritance check below (uxTaskPriorityGet(NULL) ==
+     * genqMUTEX_HIGH_PRIORITY) is the primary verification and is
+     * sufficient to prove the high-priority task entered the blocking
+     * path: priority inheritance only happens inside xSemaphoreTake()
+     * when the mutex is contended. */
+    #if ( INCLUDE_eTaskGetState == 1 ) && ( configNUMBER_OF_CORES == 1 )
     {
         configASSERT( eTaskGetState( xHighPriorityMutexTask ) == eBlocked );
     }
@@ -687,7 +785,7 @@ static void prvTakeTwoMutexesReturnInDifferentOrder( SemaphoreHandle_t xMutex,
     /* This task should now have inherited the priority of the high priority
      * task as by now the high priority task will have attempted to obtain the
      * mutex. */
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -697,7 +795,7 @@ static void prvTakeTwoMutexesReturnInDifferentOrder( SemaphoreHandle_t xMutex,
      * actual priority should remain at the high priority. */
     vTaskPrioritySet( NULL, genqMUTEX_TEST_PRIORITY );
 
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -708,11 +806,15 @@ static void prvTakeTwoMutexesReturnInDifferentOrder( SemaphoreHandle_t xMutex,
     vTaskResume( xMediumPriorityMutexTask );
 
     /* If the medium priority task did run then it will have incremented the
-     * guarded variable. */
-    if( ulGuardedVariable != 0 )
-    {
-        xErrorDetected = pdTRUE;
-    }
+     * guarded variable.  Under multi-priority SMP the medium-priority task
+     * can run on the other core regardless of inherited priority on this
+     * core, so this check only holds for single-priority configurations. */
+    #if !( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) )
+        if( ulGuardedVariable != 0 )
+        {
+            xErrorDetected = pdTRUE;
+        }
+    #endif
 
     /* Take the local mutex too, so two mutexes are now held. */
     if( xSemaphoreTake( xLocalMutex, intsemNO_BLOCK ) != pdPASS )
@@ -737,13 +839,16 @@ static void prvTakeTwoMutexesReturnInDifferentOrder( SemaphoreHandle_t xMutex,
 
     /* The guarded variable is only incremented by the medium priority task,
      * which still should not have executed as this task should remain at the
-     * higher priority, ensure this is the case. */
-    if( ulGuardedVariable != 0 )
-    {
-        xErrorDetected = pdTRUE;
-    }
+     * higher priority, ensure this is the case.  Same multi-priority SMP
+     * exception as above. */
+    #if !( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) )
+        if( ulGuardedVariable != 0 )
+        {
+            xErrorDetected = pdTRUE;
+        }
+    #endif
 
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -763,15 +868,38 @@ static void prvTakeTwoMutexesReturnInDifferentOrder( SemaphoreHandle_t xMutex,
         taskYIELD();
     #endif
 
-    /* Check the guarded variable did indeed increment... */
-    if( ulGuardedVariable != 1 )
+    /* Check the guarded variable did indeed increment.  Under multi-prio
+     * SMP the medium task may not have been scheduled yet — bounded poll
+     * for it to come in. */
+    #if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
     {
-        xErrorDetected = pdTRUE;
+        TickType_t xGqStart = xTaskGetTickCount();
+
+        while( ulGuardedVariable < 1 )
+        {
+            if( ( xTaskGetTickCount() - xGqStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                break;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        if( ulGuardedVariable < 1 )
+        {
+            xErrorDetected = pdTRUE;
+        }
     }
+    #else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+        if( ulGuardedVariable != 1 )
+        {
+            xErrorDetected = pdTRUE;
+        }
+    #endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
 
     /* ... and that the priority of this task has been disinherited to
      * genqMUTEX_TEST_PRIORITY. */
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_TEST_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_TEST_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -796,7 +924,7 @@ static void prvTakeTwoMutexesReturnInSameOrder( SemaphoreHandle_t xMutex,
 
     /* This task's priority should be as per that assigned when the task was
      * created. */
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_LOW_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_LOW_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -810,8 +938,30 @@ static void prvTakeTwoMutexesReturnInSameOrder( SemaphoreHandle_t xMutex,
     #endif
 
     /* Ensure the task is reporting its priority as blocked and not
-     * suspended (as it would have done in versions up to V7.5.3). */
-    #if ( INCLUDE_eTaskGetState == 1 )
+     * suspended (as it would have done in versions up to V7.5.3).
+     *
+     * The eTaskGetState() check below is intentionally guarded with
+     * configNUMBER_OF_CORES == 1.  On SMP, even with
+     * configRUN_MULTIPLE_PRIORITIES == 0, this check is racy:
+     *   - The high-priority task woke up via vTaskResume() above and is
+     *     running xSemaphoreTake() on the other core.
+     *   - Inside xSemaphoreTake(), priority inheritance boosts this task
+     *     (the mutex holder) up to the high-priority task's priority
+     *     BEFORE that task calls vTaskPlaceOnEventList().
+     *   - At that moment both tasks are at the same priority, so SMP can
+     *     legitimately run them concurrently on different cores.  This
+     *     task resumes (now at inherited priority) and reads the other
+     *     task's state while it is still physically executing the
+     *     remaining few instructions of xSemaphoreTake() before
+     *     transitioning to eBlocked.
+     *   - eTaskGetState() correctly reports eRunning during that
+     *     in-flight transition.
+     * The priority inheritance check below (uxTaskPriorityGet(NULL) ==
+     * genqMUTEX_HIGH_PRIORITY) is the primary verification and is
+     * sufficient to prove the high-priority task entered the blocking
+     * path: priority inheritance only happens inside xSemaphoreTake()
+     * when the mutex is contended. */
+    #if ( INCLUDE_eTaskGetState == 1 ) && ( configNUMBER_OF_CORES == 1 )
     {
         configASSERT( eTaskGetState( xHighPriorityMutexTask ) == eBlocked );
     }
@@ -820,7 +970,7 @@ static void prvTakeTwoMutexesReturnInSameOrder( SemaphoreHandle_t xMutex,
     /* This task should now have inherited the priority of the high priority
      * task as by now the high priority task will have attempted to obtain the
      * mutex. */
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -831,11 +981,13 @@ static void prvTakeTwoMutexesReturnInSameOrder( SemaphoreHandle_t xMutex,
     vTaskResume( xMediumPriorityMutexTask );
 
     /* If the medium priority task did run then it will have incremented the
-     * guarded variable. */
-    if( ulGuardedVariable != 0 )
-    {
-        xErrorDetected = pdTRUE;
-    }
+     * guarded variable.  Multi-priority SMP exception as above. */
+    #if !( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) )
+        if( ulGuardedVariable != 0 )
+        {
+            xErrorDetected = pdTRUE;
+        }
+    #endif
 
     /* Take the local mutex too, so two mutexes are now held. */
     if( xSemaphoreTake( xLocalMutex, intsemNO_BLOCK ) != pdPASS )
@@ -860,13 +1012,16 @@ static void prvTakeTwoMutexesReturnInSameOrder( SemaphoreHandle_t xMutex,
 
     /* The guarded variable is only incremented by the medium priority task,
      * which still should not have executed as this task should remain at the
-     * higher priority, ensure this is the case. */
-    if( ulGuardedVariable != 0 )
-    {
-        xErrorDetected = pdTRUE;
-    }
+     * higher priority, ensure this is the case.  Multi-priority SMP
+     * exception as above. */
+    #if !( ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) )
+        if( ulGuardedVariable != 0 )
+        {
+            xErrorDetected = pdTRUE;
+        }
+    #endif
 
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_HIGH_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_HIGH_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -885,15 +1040,37 @@ static void prvTakeTwoMutexesReturnInSameOrder( SemaphoreHandle_t xMutex,
         taskYIELD();
     #endif
 
-    /* Check the guarded variable did indeed increment... */
-    if( ulGuardedVariable != 1 )
+    /* Check the guarded variable did indeed increment.  Multi-prio SMP
+     * variant uses a bounded poll for medium to be scheduled. */
+    #if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
     {
-        xErrorDetected = pdTRUE;
+        TickType_t xGqStart = xTaskGetTickCount();
+
+        while( ulGuardedVariable < 1 )
+        {
+            if( ( xTaskGetTickCount() - xGqStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                break;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        if( ulGuardedVariable < 1 )
+        {
+            xErrorDetected = pdTRUE;
+        }
     }
+    #else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+        if( ulGuardedVariable != 1 )
+        {
+            xErrorDetected = pdTRUE;
+        }
+    #endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
 
     /* ... and that the priority of this task has been disinherited to
      * genqMUTEX_LOW_PRIORITY. */
-    if( uxTaskPriorityGet( NULL ) != genqMUTEX_LOW_PRIORITY )
+    if( !genqCHECK_OWN_PRIORITY( genqMUTEX_LOW_PRIORITY ) )
     {
         xErrorDetected = pdTRUE;
     }
@@ -975,12 +1152,25 @@ static void prvMediumPriorityMutexTask( void * pvParameters )
 static void prvHighPriorityMutexTask( void * pvParameters )
 {
     SemaphoreHandle_t xMutex = ( SemaphoreHandle_t ) pvParameters;
+    volatile BaseType_t * pxBlockWasAborted;
 
     for( ; ; )
     {
         /* The high priority task starts by suspending itself.  The low
          * priority task will unsuspend this task when required. */
         vTaskSuspend( NULL );
+
+        /* Select the abort flag belonging to this task.  The handle is read
+         * here rather than before the loop because both tasks are created, and
+         * their handles stored, while this function may already be running. */
+        pxBlockWasAborted = &xBlockWasAborted;
+
+        #if ( INCLUDE_xTaskAbortDelay == 1 )
+            if( xTaskGetCurrentTaskHandle() == xSecondMediumPriorityMutexTask )
+            {
+                pxBlockWasAborted = &xSecondBlockWasAborted;
+            }
+        #endif
 
         /* When this task unsuspends all it does is attempt to obtain the
          * mutex.  It should find the mutex is not available so a block time is
@@ -989,13 +1179,13 @@ static void prvHighPriorityMutexTask( void * pvParameters )
         {
             /* This task would expect to obtain the mutex unless its wait for
              * the mutex was aborted. */
-            if( xBlockWasAborted == pdFALSE )
+            if( *pxBlockWasAborted == pdFALSE )
             {
                 xErrorDetected = pdTRUE;
             }
             else
             {
-                xBlockWasAborted = pdFALSE;
+                *pxBlockWasAborted = pdFALSE;
             }
         }
         else

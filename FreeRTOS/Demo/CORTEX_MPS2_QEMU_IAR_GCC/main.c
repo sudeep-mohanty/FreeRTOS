@@ -103,7 +103,7 @@ static void prvUARTInit( void );
 
 /*-----------------------------------------------------------*/
 
-void main( void )
+int main( void )
 {
     /* See https://www.freertos.org/freertos-on-qemu-mps2-an385-model.html for
      * instructions. */
@@ -141,6 +141,7 @@ void main( void )
         main_full();
     }
     #endif
+    return 0;
 }
 /*-----------------------------------------------------------*/
 
@@ -210,8 +211,6 @@ void vApplicationTickHook( void )
 
     #if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY != 1 )
     {
-        extern void vFullDemoTickHookFunction( void );
-
         vFullDemoTickHookFunction();
     }
     #endif /* mainCREATE_SIMPLE_BLINKY_DEMO_ONLY */
@@ -315,6 +314,25 @@ static void prvUARTInit( void )
 }
 /*-----------------------------------------------------------*/
 
+#ifdef __PICOLIBC__
+int
+_uart_putc(char c, FILE *file)
+{
+    ( void ) file;
+
+    while( ( UART0_STATE & TX_BUFFER_MASK ) != 0 )
+    {
+    }
+
+    UART0_DATA = c;
+    return (unsigned char) c;
+}
+
+static FILE __stdio = FDEV_SETUP_STREAM(_uart_putc, NULL, NULL, _FDEV_SETUP_WRITE);
+__attribute__( ( used ) ) FILE *const stdout = &__stdio;
+#else
+/*-----------------------------------------------------------*/
+
 int __write( int iFile,
              char * pcString,
              int iStringLength )
@@ -353,3 +371,4 @@ void * malloc( size_t size )
     {
     }
 }
+#endif

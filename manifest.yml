@@ -5,14 +5,14 @@ license: "MIT"
 
 dependencies:
   - name: "FreeRTOS-Kernel"
-    version: "1b8f596"
+    version: "3a22924"
     repository:
       type: "git"
       url: "https://github.com/FreeRTOS/FreeRTOS-Kernel.git"
       path: "FreeRTOS/Source"
 
   - name: "FreeRTOS-Plus-TCP"
-    version: "fbb668ac"
+    version: "af6b379"
     repository:
       type: "git"
       url: "https://github.com/FreeRTOS/FreeRTOS-Plus-TCP.git"
@@ -40,21 +40,21 @@ dependencies:
       path: "FreeRTOS-Plus/Source/Application-Protocols/coreHTTP"
 
   - name: "coreMQTT"
-    version: "238350a"
+    version: "76e9d89"
     repository:
       type: "git"
       url: "https://github.com/FreeRTOS/coreMQTT.git"
       path: "FreeRTOS-Plus/Source/Application-Protocols/coreMQTT"
 
   - name: "coreMQTT Agent"
-    version: "d3668a6"
+    version: "7164538"
     repository:
       type: "git"
       url: "https://github.com/FreeRTOS/coreMQTT-Agent.git"
       path: "FreeRTOS-Plus/Source/Application-Protocols/coreMQTT-Agent"
 
   - name: "corePKCS11"
-    version: "59875a9"
+    version: "44fee05"
     repository:
       type: "git"
       url: "https://github.com/FreeRTOS/corePKCS11.git"
@@ -131,14 +131,14 @@ dependencies:
       path: "FreeRTOS-Plus/Source/Application-Protocols/coreSNTP"
 
   - name: "FreeRTOS-Community-Supported-Demos"
-    version: "272ca5b"
+    version: "2ff0ab7"
     repository:
       type: "git"
       url: "https://github.com/FreeRTOS/FreeRTOS-Community-Supported-Demos"
       path: "FreeRTOS/Demo/ThirdParty/Community-Supported-Demos"
 
   - name: "FreeRTOS-Partner-Supported-Demos"
-    version: "022783f"
+    version: "fcb807d"
     repository:
       type: "git"
       url: "https://github.com/FreeRTOS/FreeRTOS-Partner-Supported-Demos"

@@ -74,7 +74,10 @@ static volatile BaseType_t xErrorDetected = pdFALSE;
 static volatile uint32_t ulLoopCounter = 0;
 
 /* Handles to the test tasks. */
-TaskHandle_t xMediumPriorityTask, xHighPriorityTask, xHighestPriorityTask;
+static TaskHandle_t xMediumPriorityTask, xHighPriorityTask, xHighestPriorityTask;
+#if ( configNUMBER_OF_CORES > 1 ) && ( configUSE_CORE_AFFINITY == 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+    static TaskHandle_t xLowPriorityTask;
+#endif
 /*-----------------------------------------------------------*/
 
 void vStartQueuePeekTasks( void )
@@ -97,10 +100,30 @@ void vStartQueuePeekTasks( void )
         /* Create the demo tasks and pass it the queue just created.  We are
          * passing the queue handle by value so it does not matter that it is declared
          * on the stack here. */
-        xTaskCreate( prvLowPriorityPeekTask, "PeekL", configMINIMAL_STACK_SIZE, ( void * ) xQueue, qpeekLOW_PRIORITY, NULL );
+        #if ( configNUMBER_OF_CORES > 1 ) && ( configUSE_CORE_AFFINITY == 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+            xTaskCreate( prvLowPriorityPeekTask, "PeekL", configMINIMAL_STACK_SIZE, ( void * ) xQueue, qpeekLOW_PRIORITY, &xLowPriorityTask );
+        #else
+            xTaskCreate( prvLowPriorityPeekTask, "PeekL", configMINIMAL_STACK_SIZE, ( void * ) xQueue, qpeekLOW_PRIORITY, NULL );
+        #endif
         xTaskCreate( prvMediumPriorityPeekTask, "PeekM", configMINIMAL_STACK_SIZE, ( void * ) xQueue, qpeekMEDIUM_PRIORITY, &xMediumPriorityTask );
         xTaskCreate( prvHighPriorityPeekTask, "PeekH1", configMINIMAL_STACK_SIZE, ( void * ) xQueue, qpeekHIGH_PRIORITY, &xHighPriorityTask );
         xTaskCreate( prvHighestPriorityPeekTask, "PeekH2", configMINIMAL_STACK_SIZE, ( void * ) xQueue, qpeekHIGHEST_PRIORITY, &xHighestPriorityTask );
+
+        #if ( configNUMBER_OF_CORES > 1 ) && ( configUSE_CORE_AFFINITY == 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+
+            /* The four tasks cascade one value through the queue and each checks
+             * the queue contents at the instant it is woken, which only describes
+             * the queue while strict priority order decides who runs: each task
+             * peeks and then suspends itself before the next lower priority task
+             * is allowed to look.  With more than one core a woken lower priority
+             * task runs at the same time on the other core and sees a value from
+             * a neighbouring step of the cascade instead.  Confine the four tasks
+             * to one core so the cascade keeps the order it describes. */
+            vTaskCoreAffinitySet( xLowPriorityTask, ( UBaseType_t ) ( 1U << 1 ) );
+            vTaskCoreAffinitySet( xMediumPriorityTask, ( UBaseType_t ) ( 1U << 1 ) );
+            vTaskCoreAffinitySet( xHighPriorityTask, ( UBaseType_t ) ( 1U << 1 ) );
+            vTaskCoreAffinitySet( xHighestPriorityTask, ( UBaseType_t ) ( 1U << 1 ) );
+        #endif
     }
 }
 /*-----------------------------------------------------------*/

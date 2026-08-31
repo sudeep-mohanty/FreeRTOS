@@ -462,13 +462,19 @@ static void setOptionalConfigurations( SSLContext_t * pSslContext,
     {
         mbedtlsError = mbedtls_ssl_set_hostname( &( pSslContext->context ),
                                                  pHostName );
+    }
+    /* MbedTLS-3.6.3 requires calling the mbedtls_ssl_set_hostname() before calling mbedtls_ssl_handshake(). */
+    else
+    {
+        mbedtlsError = mbedtls_ssl_set_hostname( &( pSslContext->context ),
+                                                 NULL );
+    }
 
-        if( mbedtlsError != 0 )
-        {
-            LogError( ( "Failed to set server name: mbedTLSError= %s : %s.",
-                        mbedtlsHighLevelCodeOrDefault( mbedtlsError ),
-                        mbedtlsLowLevelCodeOrDefault( mbedtlsError ) ) );
-        }
+    if( mbedtlsError != 0 )
+    {
+        LogError( ( "Failed to set server name: mbedTLSError= %s : %s.",
+                    mbedtlsHighLevelCodeOrDefault( mbedtlsError ),
+                    mbedtlsLowLevelCodeOrDefault( mbedtlsError ) ) );
     }
 
     /* Set Maximum Fragment Length if enabled. */
@@ -593,11 +599,16 @@ static TlsTransportStatus_t tlsHandshake( NetworkContext_t * pNetworkContext,
     if( returnStatus == TLS_TRANSPORT_SUCCESS )
     {
         /* Perform the TLS handshake. */
+        TickType_t handshakeTimeoutTicks = pdMS_TO_TICKS( 10000 );
+        TimeOut_t handshakeStart;
+        vTaskSetTimeOutState( &handshakeStart );
+
         do
         {
             mbedtlsError = mbedtls_ssl_handshake( &( pTlsTransportParams->sslContext.context ) );
-        } while( ( mbedtlsError == MBEDTLS_ERR_SSL_WANT_READ ) ||
-                 ( mbedtlsError == MBEDTLS_ERR_SSL_WANT_WRITE ) );
+        } while( ( ( mbedtlsError == MBEDTLS_ERR_SSL_WANT_READ ) ||
+                   ( mbedtlsError == MBEDTLS_ERR_SSL_WANT_WRITE ) ) &&
+                 ( xTaskCheckForTimeOut( &handshakeStart, &handshakeTimeoutTicks ) == pdFALSE ) );
 
         if( mbedtlsError != 0 )
         {
@@ -648,7 +659,7 @@ static TlsTransportStatus_t initMbedtls( mbedtls_entropy_context * pEntropyConte
 
             if( mbedtlsError != PSA_SUCCESS )
             {
-                LogError( ( "Failed to initialize PSA Crypto implementation: %s", ( int ) mbedtlsError ) );
+                LogError( ( "Failed to initialize PSA Crypto implementation: %d", ( int ) mbedtlsError ) );
                 returnStatus = TLS_TRANSPORT_INTERNAL_ERROR;
             }
         }
@@ -821,8 +832,8 @@ void TLS_FreeRTOS_Disconnect( NetworkContext_t * pNetworkContext )
             /* WANT_READ and WANT_WRITE can be ignored. Logging for debugging purposes. */
             LogInfo( ( "(Network connection %p) TLS close-notify sent; "
                        "received %s as the TLS status can be ignored for close-notify.",
-                       ( tlsStatus == MBEDTLS_ERR_SSL_WANT_READ ) ? "WANT_READ" : "WANT_WRITE",
-                       pNetworkContext ) );
+                       ( void * ) pNetworkContext,
+                       ( tlsStatus == MBEDTLS_ERR_SSL_WANT_READ ) ? "WANT_READ" : "WANT_WRITE" ) );
         }
 
         /* Call socket shutdown function to close connection. */

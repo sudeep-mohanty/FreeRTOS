@@ -203,7 +203,7 @@
     static size_t uxNextRand = 0;
 
 /* The task handles are stored so their priorities can be changed. */
-    TaskHandle_t xQueueSetSendingTask, xQueueSetReceivingTask;
+    static TaskHandle_t xQueueSetSendingTask, xQueueSetReceivingTask;
 
 /*-----------------------------------------------------------*/
 
@@ -598,7 +598,19 @@
             }
 
             /* Ensure the value received was the value expected. */
-            prvCheckReceivedValue( ulReceived );
+            #if ( portUSING_GRANULAR_LOCKS == 1 )
+            {
+                UBaseType_t uxSavedInterruptStatus = taskENTER_CRITICAL_FROM_ISR();
+                {
+                    prvCheckReceivedValue( ulReceived );
+                }
+                taskEXIT_CRITICAL_FROM_ISR( uxSavedInterruptStatus );
+            }
+            #else
+            {
+                prvCheckReceivedValue( ulReceived );
+            }
+            #endif /* if ( portUSING_GRANULAR_LOCKS == 1 ) */
         }
     }
 /*-----------------------------------------------------------*/

@@ -20,7 +20,7 @@ env:
 jobs:
   winsim_cellular:
     name: Windows Simulator Cellular Demos
-    runs-on: windows-2019
+    runs-on: windows-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -128,7 +128,7 @@ jobs:
 
   winsim_coreHTTP:
     name: coreHTTP WinSim Demos
-    runs-on: windows-2019
+    runs-on: windows-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -281,7 +281,7 @@ jobs:
 
   winsim_corePKCS11:
     name: corePKCS11 WinSim Demos
-    runs-on: windows-2019
+    runs-on: windows-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -321,7 +321,8 @@ jobs:
           echo "::group::${{ env.stepName }}"
           Push-Location
           Get-Location
-          & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\Tools\Launch-VsDevShell.ps1"
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1"
           Get-Location
           Pop-Location
 
@@ -370,7 +371,7 @@ jobs:
 
   winsim_corelibs:
     name: core Library Windows Simulator Demos
-    runs-on: windows-2019
+    runs-on: windows-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -425,7 +426,8 @@ jobs:
           echo "::group::${{ env.stepName }}"
           Push-Location
           Get-Location
-          & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\Tools\Launch-VsDevShell.ps1"
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1"
           Get-Location
           Pop-Location
 
@@ -449,23 +451,63 @@ jobs:
       - name: Query CI host IP address
         id: get-ip
         run: |
-          # Query the device's IP address
+          # Query the device's IP address (same approach as the original working workflow)
           $SERVER_IP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '127.0.0.1' } | Select-Object -First 1 -ExpandProperty IPAddress)
           Write-Host "Device IP address: $SERVER_IP"
           echo "server_ip=$SERVER_IP" >> $env:GITHUB_ENV
         shell: pwsh
 
-      - name: Start localhost MQTT broker
+      - name: Install Mosquitto MQTT v5 broker
+        id: install-mosquitto
+        shell: pwsh
+        run: |
+          $installerPath = "$env:RUNNER_TEMP\mosquitto-install.exe"
+          Invoke-WebRequest -Uri "https://mosquitto.org/files/binary/win64/mosquitto-2.1.2-install-windows-x64.exe" -OutFile $installerPath
+          $proc = Start-Process -FilePath $installerPath -ArgumentList '/S','/D=C:\mosquitto' -PassThru
+          $proc | Wait-Process -Timeout 120 -ErrorAction SilentlyContinue
+          if (!$proc.HasExited) { $proc | Stop-Process -Force }
+          Stop-Service -Name mosquitto -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          if (!(Test-Path "C:\mosquitto\mosquitto.exe")) {
+            Write-Host "ERROR: mosquitto.exe not found"
+            exit 1
+          }
+          Write-Host "Mosquitto installed successfully"
+
+      - name: Start Mosquitto MQTT v5 broker
         id: mqtt-broker
-        uses: FreeRTOS/CI-CD-GitHub-Actions/localhost-mqtt-broker@main
-        with:
-          host_address: ${{ env.server_ip }}
-          root-ca-cert-path:
-            ${{ steps.generate-credentials.outputs.root-ca-cert-path }}
-          server-priv-key-path:
-            ${{ steps.generate-credentials.outputs.server-priv-key-path }}
-          server-cert-path:
-            ${{ steps.generate-credentials.outputs.server-cert-path }}
+        shell: bash
+        run: |
+          # Convert MSYS cert paths to Windows paths
+          CAFILE=$(cygpath -w "${{ steps.generate-credentials.outputs.root-ca-cert-path }}")
+          CERTFILE=$(cygpath -w "${{ steps.generate-credentials.outputs.server-cert-path }}")
+          KEYFILE=$(cygpath -w "${{ steps.generate-credentials.outputs.server-priv-key-path }}")
+
+          # Write config
+          cat > "$(cygpath -w "${RUNNER_TEMP}")/mosquitto.conf" <<EOF
+          allow_anonymous true
+          listener 1883 ${{ env.server_ip }}
+          protocol mqtt
+          listener 8883 ${{ env.server_ip }}
+          protocol mqtt
+          cafile ${CAFILE}
+          certfile ${CERTFILE}
+          keyfile ${KEYFILE}
+          tls_version tlsv1.2
+          EOF
+
+          cat "$(cygpath -w "${RUNNER_TEMP}")/mosquitto.conf"
+
+          # Start broker in background with & (same pattern as old Python broker)
+          /c/mosquitto/mosquitto.exe -c "$(cygpath -w "${RUNNER_TEMP}")/mosquitto.conf" -v &
+          sleep 3
+
+          if tasklist | grep -qi mosquitto; then
+            echo "Mosquitto broker started successfully"
+          else
+            echo "ERROR: Mosquitto broker failed to start"
+            exit 1
+          fi
 
       - env:
           stepName: Update main.c to force stdout to write immediately
@@ -862,7 +904,7 @@ jobs:
 
   winsim_aws_iot:
     name: AWS IoT Windows Simulator Demos
-    runs-on: windows-2019
+    runs-on: windows-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -1146,7 +1188,7 @@ jobs:
 
   plus_tcp_winsim:
     name: FreeRTOS+TCP Windows Simulator Demos
-    runs-on: windows-2019
+    runs-on: windows-latest
     continue-on-error: true
     steps:
       - name: Checkout Repository
@@ -1181,7 +1223,8 @@ jobs:
           echo "::group::${{ env.stepName }}"
           Push-Location
           Get-Location
-          & "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\Tools\Launch-VsDevShell.ps1"
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1"
           Get-Location
           Pop-Location
 
@@ -1303,7 +1346,7 @@ jobs:
 
   winsim_plus_demos:
     name: FreeRTOS+CLI Windows Simulator Demos
-    runs-on: windows-2019
+    runs-on: windows-latest
     continue-on-error: true
     steps:
       - name: Checkout Repository

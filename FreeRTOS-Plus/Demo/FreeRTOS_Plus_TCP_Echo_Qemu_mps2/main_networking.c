@@ -44,6 +44,7 @@
 #include "FreeRTOS_Sockets.h"
 #include "TCPEchoClient_SingleTasks.h"
 #include "CMSIS/CMSDK_CM3.h"
+#include "main_networking.h"
 
 /* Echo client task parameters  */
 #define mainECHO_CLIENT_TASK_STACK_SIZE     ( configMINIMAL_STACK_SIZE * 2 )                /* Not used in the linux port. */
@@ -141,7 +142,10 @@ static UBaseType_t ulNextRand;
 void main_tcp_echo_client_tasks( void )
 {
     BaseType_t xReturn;
-    const uint32_t ulLongTime_ms = pdMS_TO_TICKS( 1000UL );
+
+    #ifndef __PICOLIBC__
+        const uint32_t ulLongTime_ms = pdMS_TO_TICKS( 1000UL );
+    #endif
 
     /*
      * Instructions for using this project are provided on:
@@ -202,7 +206,9 @@ void main_tcp_echo_client_tasks( void )
      * really applicable to the Linux simulator port). */
     for( ; ; )
     {
-        usleep( ulLongTime_ms * 1000 );
+        #ifndef __PICOLIBC__
+            usleep( ulLongTime_ms * 1000 );
+        #endif
     }
 }
 /*-----------------------------------------------------------*/
@@ -211,17 +217,19 @@ BaseType_t xTasksAlreadyCreated = pdFALSE;
 
 /* Called by FreeRTOS+TCP when the network connects or disconnects.  Disconnect
  * events are only received if implemented in the MAC driver. */
+/* *INDENT-OFF* */
 #if defined( ipconfigIPv4_BACKWARD_COMPATIBLE ) && ( ipconfigIPv4_BACKWARD_COMPATIBLE == 0 )
     void vApplicationIPNetworkEventHook_Multi( eIPCallbackEvent_t eNetworkEvent,
                                                struct xNetworkEndPoint * pxEndPoint )
 #else
     void vApplicationIPNetworkEventHook( eIPCallbackEvent_t eNetworkEvent )
 #endif /* defined( ipconfigIPv4_BACKWARD_COMPATIBLE ) && ( ipconfigIPv4_BACKWARD_COMPATIBLE == 0 ) */
+/* *INDENT-ON* */
 {
-    uint32_t ulIPAddress;
-    uint32_t ulNetMask;
-    uint32_t ulGatewayAddress;
-    uint32_t ulDNSServerAddress;
+    uint32_t ulIPAddress = 0U;
+    uint32_t ulNetMask = 0U;
+    uint32_t ulGatewayAddress = 0U;
+    uint32_t ulDNSServerAddress = 0U;
     char cBuffer[ 16 ];
 
     #if defined( ipconfigIPv4_BACKWARD_COMPATIBLE ) && ( ipconfigIPv4_BACKWARD_COMPATIBLE == 0 )
@@ -256,8 +264,10 @@ BaseType_t xTasksAlreadyCreated = pdFALSE;
         #else
             FreeRTOS_GetAddressConfiguration( &ulIPAddress, &ulNetMask, &ulGatewayAddress, &ulDNSServerAddress );
         #endif /* defined( ipconfigIPv4_BACKWARD_COMPATIBLE ) && ( ipconfigIPv4_BACKWARD_COMPATIBLE == 0 ) */
+        FreeRTOS_printf( ( "Network Configuration:\r\n\r\n" ) );
+
         FreeRTOS_inet_ntoa( ulIPAddress, cBuffer );
-        FreeRTOS_printf( ( "\r\n\r\nIP Address: %s\r\n", cBuffer ) );
+        FreeRTOS_printf( ( "IP Address: %s\r\n", cBuffer ) );
 
         FreeRTOS_inet_ntoa( ulNetMask, cBuffer );
         FreeRTOS_printf( ( "Subnet Mask: %s\r\n", cBuffer ) );
@@ -275,14 +285,15 @@ BaseType_t xTasksAlreadyCreated = pdFALSE;
 }
 /*-----------------------------------------------------------*/
 
-UBaseType_t uxRand( void )
+static UBaseType_t uxRand( void )
 {
     const uint32_t ulMultiplier = 0x015a4e35UL, ulIncrement = 1UL;
 
     /* Utility function to generate a pseudo random number. */
 
     ulNextRand = ( ulMultiplier * ulNextRand ) + ulIncrement;
-    return( ( int ) ( ulNextRand >> 16UL ) & 0x7fffUL );
+
+    return ( ulNextRand >> 16UL ) & 0x7fffUL;
 }
 /*-----------------------------------------------------------*/
 
@@ -317,7 +328,7 @@ static void prvMiscInitialisation( void )
 
 #if ( ipconfigUSE_LLMNR != 0 ) || ( ipconfigUSE_NBNS != 0 ) || ( ipconfigDHCP_REGISTER_HOSTNAME == 1 )
 
-    const char * pcApplicationHostnameHook( void )
+    static const char * pcApplicationHostnameHook( void )
     {
         /* Assign the name "FreeRTOS" to this network node.  This function will
          * be called during the DHCP: the machine will be registered with an IP

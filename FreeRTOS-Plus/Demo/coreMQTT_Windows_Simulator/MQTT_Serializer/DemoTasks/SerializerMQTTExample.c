@@ -376,6 +376,12 @@ const static MQTTFixedBuffer_t xBuffer =
     .size    = mqttexampleSHARED_BUFFER_SIZE
 };
 
+/**
+ * @brief Connection properties received from the broker in CONNACK.
+ * Passed to MQTT_DeserializeAck for subsequent ACK packets.
+ */
+static MQTTConnectionProperties_t xConnectionProperties;
+
 /*-----------------------------------------------------------*/
 
 /**
@@ -708,14 +714,15 @@ static Socket_t prvConnectToServerWithBackoffRetries()
 static void prvCreateMQTTConnectionWithBroker( Socket_t xMQTTSocket )
 {
     BaseType_t xStatus;
-    size_t xRemainingLength;
-    size_t xPacketSize;
+    uint32_t xRemainingLength;
+    uint32_t xPacketSize;
     MQTTStatus_t xResult;
     MQTTPacketInfo_t xIncomingPacket;
     MQTTConnectInfo_t xConnectInfo;
-    uint16_t usPacketId;
     bool xSessionPresent;
     NetworkContext_t xNetworkContext;
+    MQTTPropBuilder_t xConnectProps;
+    uint8_t ucConnectPropsBuf[ 200 ];
 
     /***
      * For readability, error handling in this function is restricted to the use of
@@ -742,9 +749,24 @@ static void prvCreateMQTTConnectionWithBroker( Socket_t xMQTTSocket )
      * In the absence of sending any other control packets, the client MUST send a PINGREQ Packet. */
     xConnectInfo.keepAliveSeconds = mqttexampleKEEP_ALIVE_TIMEOUT_SECONDS;
 
+    /* Initialize MQTT v5 connect properties. */
+    xResult = MQTTPropertyBuilder_Init( &xConnectProps, ucConnectPropsBuf, sizeof( ucConnectPropsBuf ) );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Set session expiry interval to 3600 seconds. */
+    xResult = MQTTPropAdd_SessionExpiry( &xConnectProps, 3600U, &( uint8_t ) { MQTT_PACKET_TYPE_CONNECT } );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Set receive maximum to 10. */
+    xResult = MQTTPropAdd_ReceiveMax( &xConnectProps, 10U, &( uint8_t ) { MQTT_PACKET_TYPE_CONNECT } );
+    MQTTPropAdd_MaxPacketSize( &xConnectProps, ( uint32_t ) mqttexampleSHARED_BUFFER_SIZE, &( uint8_t ) { MQTT_PACKET_TYPE_CONNECT } );
+    configASSERT( xResult == MQTTSuccess );
+
     /* Get size requirement for the connect packet.
      * Last Will and Testament is not used in this demo. It is passed as NULL. */
     xResult = MQTT_GetConnectPacketSize( &xConnectInfo,
+                                         NULL,
+                                         &xConnectProps,
                                          NULL,
                                          &xRemainingLength,
                                          &xPacketSize );
@@ -755,6 +777,8 @@ static void prvCreateMQTTConnectionWithBroker( Socket_t xMQTTSocket )
 
     /* Serialize MQTT connect packet into the provided buffer. */
     xResult = MQTT_SerializeConnect( &xConnectInfo,
+                                     NULL,
+                                     &xConnectProps,
                                      NULL,
                                      xRemainingLength,
                                      &xBuffer );
@@ -793,9 +817,12 @@ static void prvCreateMQTTConnectionWithBroker( Socket_t xMQTTSocket )
     configASSERT( xStatus == ( BaseType_t ) xIncomingPacket.remainingLength );
 
     xIncomingPacket.pRemainingData = xBuffer.pBuffer;
-    xResult = MQTT_DeserializeAck( &xIncomingPacket,
-                                   &usPacketId,
-                                   &xSessionPresent );
+    xResult = MQTT_InitConnect( &xConnectionProperties );
+    configASSERT( xResult == MQTTSuccess );
+    xResult = MQTT_DeserializeConnAck( &xIncomingPacket,
+                                       &xSessionPresent,
+                                       NULL,
+                                       &xConnectionProperties );
 
     /* Log this convenient demo information before asserting if the result is
      * successful. */
@@ -811,10 +838,12 @@ static void prvCreateMQTTConnectionWithBroker( Socket_t xMQTTSocket )
 static void prvMQTTSubscribeToTopic( Socket_t xMQTTSocket )
 {
     MQTTStatus_t xResult;
-    size_t xRemainingLength;
-    size_t xPacketSize;
+    uint32_t xRemainingLength;
+    uint32_t xPacketSize;
     BaseType_t xStatus;
     MQTTSubscribeInfo_t xMQTTSubscription[ mqttexampleTOPIC_COUNT ];
+    MQTTPropBuilder_t xSubProps;
+    uint8_t ucSubPropsBuf[ 200 ];
 
     /* Some fields not used by this demo so start with everything at 0. */
     ( void ) memset( ( void * ) &xMQTTSubscription, 0x00, sizeof( xMQTTSubscription ) );
@@ -824,16 +853,28 @@ static void prvMQTTSubscribeToTopic( Socket_t xMQTTSocket )
     xMQTTSubscription[ 0 ].qos = MQTTQoS0;
     xMQTTSubscription[ 0 ].pTopicFilter = mqttexampleTOPIC;
     xMQTTSubscription[ 0 ].topicFilterLength = ( uint16_t ) strlen( mqttexampleTOPIC );
+    xMQTTSubscription[ 0 ].noLocalOption = false;
+    xMQTTSubscription[ 0 ].retainAsPublishedOption = true;
+    xMQTTSubscription[ 0 ].retainHandlingOption = retainSendOnSub;
 
     /***
      * For readability, error handling in this function is restricted to the use of
      * asserts().
      ***/
 
+    /* Initialize MQTT v5 subscribe properties. */
+    xResult = MQTTPropertyBuilder_Init( &xSubProps, ucSubPropsBuf, sizeof( ucSubPropsBuf ) );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Add subscription identifier. */
+    xResult = MQTTPropAdd_SubscriptionId( &xSubProps, 1U, &( uint8_t ) { MQTT_PACKET_TYPE_SUBSCRIBE } );
+    configASSERT( xResult == MQTTSuccess );
+
     xResult = MQTT_GetSubscribePacketSize( xMQTTSubscription,
                                            sizeof( xMQTTSubscription ) / sizeof( MQTTSubscribeInfo_t ),
+                                           &xSubProps,
                                            &xRemainingLength,
-                                           &xPacketSize );
+                                           &xPacketSize, ( uint32_t ) mqttexampleSHARED_BUFFER_SIZE );
 
     /* Make sure the packet size is less than static buffer size. */
     configASSERT( xResult == MQTTSuccess );
@@ -847,6 +888,7 @@ static void prvMQTTSubscribeToTopic( Socket_t xMQTTSocket )
     /* Serialize subscribe into statically allocated ucSharedBuffer. */
     xResult = MQTT_SerializeSubscribe( xMQTTSubscription,
                                        sizeof( xMQTTSubscription ) / sizeof( MQTTSubscribeInfo_t ),
+                                       &xSubProps,
                                        usSubscribePacketIdentifier,
                                        xRemainingLength,
                                        &xBuffer );
@@ -983,10 +1025,13 @@ static void prvMQTTPublishToTopic( Socket_t xMQTTSocket )
 {
     MQTTStatus_t xResult;
     MQTTPublishInfo_t xMQTTPublishInfo;
-    size_t xRemainingLength;
-    size_t xPacketSize;
+    uint32_t xRemainingLength;
+    uint32_t xPacketSize;
     size_t xHeaderSize;
     BaseType_t xStatus;
+    MQTTPropBuilder_t xPubProps;
+    uint8_t ucPubPropsBuf[ 200 ];
+    MQTTUserProperty_t xUserProp;
 
     /***
      * For readability, error handling in this function is restricted to the use of
@@ -1004,10 +1049,31 @@ static void prvMQTTPublishToTopic( Socket_t xMQTTSocket )
     xMQTTPublishInfo.pPayload = mqttexampleMESSAGE;
     xMQTTPublishInfo.payloadLength = strlen( mqttexampleMESSAGE );
 
+    /* Initialize MQTT v5 publish properties. */
+    xResult = MQTTPropertyBuilder_Init( &xPubProps, ucPubPropsBuf, sizeof( ucPubPropsBuf ) );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Set payload format indicator to UTF-8. */
+    xResult = MQTTPropAdd_PayloadFormat( &xPubProps, 1U, &( uint8_t ) { MQTT_PACKET_TYPE_PUBLISH } );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Set message expiry interval to 300 seconds. */
+    xResult = MQTTPropAdd_MessageExpiry( &xPubProps, 300U, &( uint8_t ) { MQTT_PACKET_TYPE_PUBLISH } );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Add a user property. */
+    xUserProp.pKey = "demo";
+    xUserProp.keyLength = 4U;
+    xUserProp.pValue = "serializer";
+    xUserProp.valueLength = 10U;
+    xResult = MQTTPropAdd_UserProp( &xPubProps, &xUserProp, &( uint8_t ) { MQTT_PACKET_TYPE_PUBLISH } );
+    configASSERT( xResult == MQTTSuccess );
+
     /* Find out length of Publish packet size. */
     xResult = MQTT_GetPublishPacketSize( &xMQTTPublishInfo,
+                                         &xPubProps,
                                          &xRemainingLength,
-                                         &xPacketSize );
+                                         &xPacketSize, ( uint32_t ) mqttexampleSHARED_BUFFER_SIZE );
     configASSERT( xResult == MQTTSuccess );
 
     /* Make sure the packet size is less than static buffer size. */
@@ -1017,6 +1083,7 @@ static void prvMQTTPublishToTopic( Socket_t xMQTTSocket )
      * be sent directly in order to avoid copying it into the buffer.
      * QOS0 does not make use of packet identifier, therefore value of 0 is used */
     xResult = MQTT_SerializePublishHeader( &xMQTTPublishInfo,
+                                           &xPubProps,
                                            0,
                                            xRemainingLength,
                                            &xBuffer,
@@ -1042,10 +1109,13 @@ static void prvMQTTPublishToTopic( Socket_t xMQTTSocket )
 static void prvMQTTUnsubscribeFromTopic( Socket_t xMQTTSocket )
 {
     MQTTStatus_t xResult;
-    size_t xRemainingLength;
-    size_t xPacketSize;
+    uint32_t xRemainingLength;
+    uint32_t xPacketSize;
     BaseType_t xStatus;
     MQTTSubscribeInfo_t xMQTTSubscription[ 1 ];
+    MQTTPropBuilder_t xUnsubProps;
+    uint8_t ucUnsubPropsBuf[ 200 ];
+    MQTTUserProperty_t xUserProp;
 
     /* Some fields not used by this demo so start with everything at 0. */
     ( void ) memset( ( void * ) &xMQTTSubscription, 0x00, sizeof( xMQTTSubscription ) );
@@ -1056,11 +1126,23 @@ static void prvMQTTUnsubscribeFromTopic( Socket_t xMQTTSocket )
     xMQTTSubscription[ 0 ].pTopicFilter = mqttexampleTOPIC;
     xMQTTSubscription[ 0 ].topicFilterLength = ( uint16_t ) strlen( mqttexampleTOPIC );
 
+    /* Initialize MQTT v5 unsubscribe properties. */
+    xResult = MQTTPropertyBuilder_Init( &xUnsubProps, ucUnsubPropsBuf, sizeof( ucUnsubPropsBuf ) );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Add a user property indicating reason for unsubscribe. */
+    xUserProp.pKey = "reason";
+    xUserProp.keyLength = 6U;
+    xUserProp.pValue = "demo-complete";
+    xUserProp.valueLength = 13U;
+    xResult = MQTTPropAdd_UserProp( &xUnsubProps, &xUserProp, &( uint8_t ) { MQTT_PACKET_TYPE_DISCONNECT } );
+    configASSERT( xResult == MQTTSuccess );
 
     xResult = MQTT_GetUnsubscribePacketSize( xMQTTSubscription,
                                              sizeof( xMQTTSubscription ) / sizeof( MQTTSubscribeInfo_t ),
+                                             &xUnsubProps,
                                              &xRemainingLength,
-                                             &xPacketSize );
+                                             &xPacketSize, ( uint32_t ) mqttexampleSHARED_BUFFER_SIZE );
     configASSERT( xResult == MQTTSuccess );
     /* Make sure the packet size is less than static buffer size */
     configASSERT( xPacketSize < mqttexampleSHARED_BUFFER_SIZE );
@@ -1072,6 +1154,7 @@ static void prvMQTTUnsubscribeFromTopic( Socket_t xMQTTSocket )
 
     xResult = MQTT_SerializeUnsubscribe( xMQTTSubscription,
                                          sizeof( xMQTTSubscription ) / sizeof( MQTTSubscribeInfo_t ),
+                                         &xUnsubProps,
                                          usUnsubscribePacketIdentifier,
                                          xRemainingLength,
                                          &xBuffer );
@@ -1111,14 +1194,33 @@ static void prvMQTTDisconnect( Socket_t xMQTTSocket )
 {
     MQTTStatus_t xResult;
     BaseType_t xStatus;
-    size_t xPacketSize;
+    uint32_t xRemainingLength;
+    uint32_t xPacketSize;
+    MQTTPropBuilder_t xDisconnectProps;
+    uint8_t ucDisconnectPropsBuf[ 200 ];
+    MQTTSuccessFailReasonCode_t xReasonCode = MQTT_REASON_DISCONNECT_NORMAL_DISCONNECTION;
+
+    /* Initialize MQTT v5 disconnect properties. */
+    xResult = MQTTPropertyBuilder_Init( &xDisconnectProps, ucDisconnectPropsBuf, sizeof( ucDisconnectPropsBuf ) );
+    configASSERT( xResult == MQTTSuccess );
+
+    /* Add reason string for disconnect. */
+    xResult = MQTTPropAdd_ReasonString( &xDisconnectProps, "Normal disconnect", 17U, &( uint8_t ) { MQTT_PACKET_TYPE_DISCONNECT } );
+    configASSERT( xResult == MQTTSuccess );
 
     /* Calculate DISCONNECT packet size. */
-    xResult = MQTT_GetDisconnectPacketSize( &xPacketSize );
+    xResult = MQTT_GetDisconnectPacketSize( &xDisconnectProps,
+                                            &xRemainingLength,
+                                            &xPacketSize,
+                                            ( uint32_t ) mqttexampleSHARED_BUFFER_SIZE,
+                                            &xReasonCode );
     configASSERT( xResult == MQTTSuccess );
     configASSERT( xPacketSize <= mqttexampleSHARED_BUFFER_SIZE );
 
-    xResult = MQTT_SerializeDisconnect( &xBuffer );
+    xResult = MQTT_SerializeDisconnect( &xDisconnectProps,
+                                        &xReasonCode,
+                                        xRemainingLength,
+                                        &xBuffer );
     configASSERT( xResult == MQTTSuccess );
 
     xStatus = FreeRTOS_send( xMQTTSocket,
@@ -1163,6 +1265,10 @@ static void prvMQTTProcessResponse( MQTTPacketInfo_t * pxIncomingPacket,
 
         case MQTT_PACKET_TYPE_PINGRESP:
             LogInfo( ( "Ping Response successfully received." ) );
+            break;
+
+        case MQTT_PACKET_TYPE_DISCONNECT:
+            LogInfo( ( "Server initiated disconnect received." ) );
             break;
 
         /* Any other packet type is invalid. */
@@ -1212,6 +1318,7 @@ static void prvMQTTProcessIncomingPacket( Socket_t xMQTTSocket )
     MQTTPublishInfo_t xPublishInfo;
     uint16_t usPacketId;
     NetworkContext_t xNetworkContext;
+    MQTTReasonCodeInfo_t xReasonCodeInfo;
 
     /***
      * For readability, error handling in this function is restricted to the use of
@@ -1249,7 +1356,7 @@ static void prvMQTTProcessIncomingPacket( Socket_t xMQTTSocket )
         /* Check if the incoming packet is a publish packet. */
         if( ( xIncomingPacket.type & 0xf0 ) == MQTT_PACKET_TYPE_PUBLISH )
         {
-            xResult = MQTT_DeserializePublish( &xIncomingPacket, &usPacketId, &xPublishInfo );
+            xResult = MQTT_DeserializePublish( &xIncomingPacket, &usPacketId, &xPublishInfo, NULL, ( uint32_t ) mqttexampleSHARED_BUFFER_SIZE, 0U );
             configASSERT( xResult == MQTTSuccess );
 
             /* Process incoming Publish message. */
@@ -1262,7 +1369,7 @@ static void prvMQTTProcessIncomingPacket( Socket_t xMQTTSocket )
              * packet. Session present is only valid for a CONNACK. CONNACK is not
              * expected to be received here. Hence pass NULL for pointer to session
              * present. */
-            xResult = MQTT_DeserializeAck( &xIncomingPacket, &usPacketId, NULL );
+            xResult = MQTT_DeserializeAck( &xIncomingPacket, &usPacketId, &xReasonCodeInfo, NULL, &xConnectionProperties );
             configASSERT( xResult == MQTTSuccess );
 
             if( xIncomingPacket.type == MQTT_PACKET_TYPE_SUBACK )

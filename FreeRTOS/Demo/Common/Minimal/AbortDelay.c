@@ -113,6 +113,16 @@
     static void prvCheckExpectedTimeIsWithinAnAcceptableMargin( TickType_t xStartTime,
                                                                 TickType_t xExpectedBlockTime );
 
+/*
+ * Obtains a peer task's handle from its name, waiting (bounded) for the peer to
+ * be created.  The two test tasks look each other up by name, but with more
+ * than one core the task created first starts running on the other core while
+ * vCreateAbortDelayTasks() is still creating its peer, so the lookup can run
+ * before the peer exists.  Returning NULL on timeout leaves the configASSERT()
+ * at the call site to catch a task that is genuinely missing.
+ */
+    static TaskHandle_t prvWaitForPeerTaskHandle( const char * pcName );
+
 /*-----------------------------------------------------------*/
 
 /* Used to ensure that tasks are still executing without error. */
@@ -124,13 +134,13 @@
     static const char * pcControllingTaskName = "AbtCtrl", * pcBlockingTaskName = "AbtBlk";
 
 /* The maximum amount of time a task will block for. */
-    const TickType_t xMaxBlockTime = pdMS_TO_TICKS( 100 );
-    const TickType_t xHalfMaxBlockTime = pdMS_TO_TICKS( 50 );
+    static const TickType_t xMaxBlockTime = pdMS_TO_TICKS( 100 );
+    static const TickType_t xHalfMaxBlockTime = pdMS_TO_TICKS( 50 );
 
 /* The actual block time is dependent on the priority of other tasks in the
  * system so the actual block time might be greater than that expected, but it
  * should be within an acceptable upper bound. */
-    const TickType_t xAllowableMargin = pdMS_TO_TICKS( 7 );
+    static const TickType_t xAllowableMargin = pdMS_TO_TICKS( 7 );
 
 /*-----------------------------------------------------------*/
 
@@ -139,6 +149,32 @@
         /* Create the two test tasks described above. */
         xTaskCreate( prvControllingTask, pcControllingTaskName, configMINIMAL_STACK_SIZE, NULL, abtCONTROLLING_PRIORITY, NULL );
         xTaskCreate( prvBlockingTask, pcBlockingTaskName, configMINIMAL_STACK_SIZE, NULL, abtBLOCKING_PRIORITY, NULL );
+    }
+/*-----------------------------------------------------------*/
+
+    static TaskHandle_t prvWaitForPeerTaskHandle( const char * pcName )
+    {
+        const TickType_t xStart = xTaskGetTickCount();
+        TaskHandle_t xHandle;
+
+        for( ; ; )
+        {
+            xHandle = xTaskGetHandle( pcName );
+
+            if( xHandle != NULL )
+            {
+                break;
+            }
+
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                break;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        return xHandle;
     }
 /*-----------------------------------------------------------*/
 
@@ -152,7 +188,7 @@
         /* Just to remove compiler warnings. */
         ( void ) pvParameters;
 
-        xBlockingTask = xTaskGetHandle( pcBlockingTaskName );
+        xBlockingTask = prvWaitForPeerTaskHandle( pcBlockingTaskName );
         configASSERT( xBlockingTask );
 
         for( ; ; )
@@ -219,7 +255,7 @@
          * below. */
         prvPerformSingleTaskTests();
 
-        xControllingTask = xTaskGetHandle( pcControllingTaskName );
+        xControllingTask = prvWaitForPeerTaskHandle( pcControllingTaskName );
         configASSERT( xControllingTask );
 
         for( ; ; )

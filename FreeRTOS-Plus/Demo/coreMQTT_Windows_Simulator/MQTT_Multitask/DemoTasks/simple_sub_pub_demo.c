@@ -277,7 +277,7 @@ static void prvSubscribeCommandCallback( void * pxCommandContext,
          * callback. */
         xSubscriptionAdded = addSubscription( ( SubscriptionElement_t * ) xGlobalMqttAgentContext.pIncomingCallbackContext,
                                               pxSubscribeArgs->pSubscribeInfo->pTopicFilter,
-                                              pxSubscribeArgs->pSubscribeInfo->topicFilterLength,
+                                              ( uint16_t ) pxSubscribeArgs->pSubscribeInfo->topicFilterLength,
                                               prvIncomingPublishCallback,
                                               NULL );
 
@@ -363,10 +363,11 @@ static bool prvSubscribeToTopic( MQTTQoS_t xQoS,
     /* Complete the subscribe information.  The topic string must persist for
      * duration of subscription! */
     xSubscribeInfo.pTopicFilter = pcTopicFilter;
-    xSubscribeInfo.topicFilterLength = ( uint16_t ) strlen( pcTopicFilter );
+    xSubscribeInfo.topicFilterLength = strlen( pcTopicFilter );
     xSubscribeInfo.qos = xQoS;
     xSubscribeArgs.pSubscribeInfo = &xSubscribeInfo;
     xSubscribeArgs.numSubscriptions = 1;
+    xSubscribeArgs.pProperties = NULL;
 
     /* Complete an application defined context associated with this subscribe message.
      * This gets updated in the callback function so the variable must persist until
@@ -433,6 +434,7 @@ static void prvSimpleSubscribePublishTask( void * pvParameters )
     MQTTQoS_t xQoS;
     TickType_t xTicksToDelay;
     MQTTAgentCommandInfo_t xCommandParams = { 0 };
+    MQTTAgentPublishArgs_t xPublishArgs = { 0 };
     char * pcTopicBuffer = topicBuf[ ulTaskNumber ];
 
     /* Have different tasks use different QoS.  0 and 1.  2 can also be used
@@ -457,7 +459,7 @@ static void prvSimpleSubscribePublishTask( void * pvParameters )
     memset( ( void * ) &xPublishInfo, 0x00, sizeof( xPublishInfo ) );
     xPublishInfo.qos = xQoS;
     xPublishInfo.pTopicName = pcTopicBuffer;
-    xPublishInfo.topicNameLength = ( uint16_t ) strlen( pcTopicBuffer );
+    xPublishInfo.topicNameLength = strlen( pcTopicBuffer );
     xPublishInfo.pPayload = payloadBuf;
 
     /* Store the handler to this task in the command context so the callback
@@ -481,7 +483,7 @@ static void prvSimpleSubscribePublishTask( void * pvParameters )
                   taskName,
                   ( int ) ulValueToNotify );
 
-        xPublishInfo.payloadLength = ( uint16_t ) strlen( payloadBuf );
+        xPublishInfo.payloadLength = strlen( payloadBuf );
 
         /* Also store the incrementing number in the command context so it can
          * be accessed by the callback that executes when the publish operation
@@ -496,8 +498,11 @@ static void prvSimpleSubscribePublishTask( void * pvParameters )
          * as it is to be checked against the value sent from the callback.. */
         ulNotification = ~ulValueToNotify;
 
+        xPublishArgs.pPublishInfo = &xPublishInfo;
+        xPublishArgs.pProperties = NULL;
+
         xCommandAdded = MQTTAgent_Publish( &xGlobalMqttAgentContext,
-                                           &xPublishInfo,
+                                           &xPublishArgs,
                                            &xCommandParams );
         configASSERT( xCommandAdded == MQTTSuccess );
 

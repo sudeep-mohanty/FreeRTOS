@@ -1,0 +1,5 @@
+# Sweep: dual-core, multi-priority scheduling.
+
+CONFIG_FREERTOS_SMP=y
+CONFIG_FREERTOS_UNICORE=n
+CONFIG_FREERTOS_RUN_MULTIPLE_PRIORITIES=y

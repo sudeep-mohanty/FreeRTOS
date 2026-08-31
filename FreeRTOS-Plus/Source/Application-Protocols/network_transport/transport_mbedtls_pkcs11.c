@@ -165,9 +165,9 @@ static TlsTransportStatus_t tlsSetup( NetworkContext_t * pNetworkContext,
  *
  * @return Zero on success.
  */
-static int32_t generateRandomBytes( void * pvCtx,
-                                    unsigned char * pucRandom,
-                                    size_t xRandomLength );
+static int generateRandomBytes( void * pvCtx,
+                                unsigned char * pucRandom,
+                                size_t xRandomLength );
 
 /**
  * @brief Helper for reading the specified certificate object, if present,
@@ -320,7 +320,7 @@ static TlsTransportStatus_t tlsSetup( NetworkContext_t * pNetworkContext,
 
         if( mbedtlsError != PSA_SUCCESS )
         {
-            LogError( ( "Failed to initialize PSA Crypto implementation: %s", ( int ) mbedtlsError ) );
+            LogError( ( "Failed to initialize PSA Crypto implementation: %d", ( int ) mbedtlsError ) );
             returnStatus = TLS_TRANSPORT_INVALID_PARAMETER;
         }
         else
@@ -463,15 +463,21 @@ static TlsTransportStatus_t tlsSetup( NetworkContext_t * pNetworkContext,
         {
             mbedtlsError = mbedtls_ssl_set_hostname( &( pTlsTransportParams->sslContext.context ),
                                                      pHostName );
+        }
+        /* MbedTLS-3.6.3 requires calling the mbedtls_ssl_set_hostname() before calling mbedtls_ssl_handshake(). */
+        else
+        {
+            mbedtlsError = mbedtls_ssl_set_hostname( &( pTlsTransportParams->sslContext.context ),
+                                                     NULL );
+        }
 
-            if( mbedtlsError != 0 )
-            {
-                LogError( ( "Failed to set server name: mbedTLSError= %s : %s.",
-                            mbedtlsHighLevelCodeOrDefault( mbedtlsError ),
-                            mbedtlsLowLevelCodeOrDefault( mbedtlsError ) ) );
+        if( mbedtlsError != 0 )
+        {
+            LogError( ( "Failed to set server name: mbedTLSError= %s : %s.",
+                        mbedtlsHighLevelCodeOrDefault( mbedtlsError ),
+                        mbedtlsLowLevelCodeOrDefault( mbedtlsError ) ) );
 
-                returnStatus = TLS_TRANSPORT_INTERNAL_ERROR;
-            }
+            returnStatus = TLS_TRANSPORT_INTERNAL_ERROR;
         }
     }
 
@@ -538,9 +544,9 @@ static TlsTransportStatus_t tlsSetup( NetworkContext_t * pNetworkContext,
 
 /*-----------------------------------------------------------*/
 
-static int32_t generateRandomBytes( void * pvCtx,
-                                    unsigned char * pucRandom,
-                                    size_t xRandomLength )
+static int generateRandomBytes( void * pvCtx,
+                                unsigned char * pucRandom,
+                                size_t xRandomLength )
 {
     /* Must cast from void pointer to conform to mbed TLS API. */
     SSLContext_t * pxCtx = ( SSLContext_t * ) pvCtx;

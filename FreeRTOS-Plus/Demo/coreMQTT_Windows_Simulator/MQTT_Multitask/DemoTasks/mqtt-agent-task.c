@@ -192,7 +192,7 @@
  * @brief Timeout for receiving CONNACK after sending an MQTT CONNECT packet.
  * Defined in milliseconds.
  */
-#define mqttexampleCONNACK_RECV_TIMEOUT_MS           ( 1000U )
+#define mqttexampleCONNACK_RECV_TIMEOUT_MS           ( 10000U )
 
 /**
  * @brief The maximum number of retries for network operation with server.
@@ -529,7 +529,9 @@ static MQTTStatus_t prvMQTTInit( void )
                               prvGetTimeMs,
                               prvIncomingPublishCallback,
                               /* Context to pass into the callback. Passing the pointer to subscription array. */
-                              xGlobalSubscriptionList );
+                              xGlobalSubscriptionList,
+                              NULL,
+                              0U );
 
     return xReturn;
 }
@@ -555,7 +557,7 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
      * the MQTT broker. In a production device the identifier can be something
      * unique, such as a device serial number. */
     xConnectInfo.pClientIdentifier = democonfigCLIENT_IDENTIFIER;
-    xConnectInfo.clientIdentifierLength = ( uint16_t ) strlen( democonfigCLIENT_IDENTIFIER );
+    xConnectInfo.clientIdentifierLength = strlen( democonfigCLIENT_IDENTIFIER );
 
     /* Set MQTT keep-alive period. It is the responsibility of the application
      * to ensure that the interval between Control Packets being sent does not
@@ -567,11 +569,11 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
     #if defined( democonfigUSE_AWS_IOT_CORE_BROKER ) && defined( democonfigCLIENT_USERNAME )
         /* Append metrics string when connecting to AWS IoT Core with custom auth */
         xConnectInfo.pUserName = democonfigCLIENT_USERNAME AWS_IOT_METRICS_STRING;
-        xConnectInfo.userNameLength = ( uint16_t ) strlen( democonfigCLIENT_USERNAME AWS_IOT_METRICS_STRING );
+        xConnectInfo.userNameLength = strlen( democonfigCLIENT_USERNAME AWS_IOT_METRICS_STRING );
     #elif defined( democonfigUSE_AWS_IOT_CORE_BROKER )
         /* If no username is needed, only send the metrics string */
         xConnectInfo.pUserName = AWS_IOT_METRICS_STRING;
-        xConnectInfo.userNameLength = ( uint16_t ) strlen( AWS_IOT_METRICS_STRING );
+        xConnectInfo.userNameLength = strlen( AWS_IOT_METRICS_STRING );
 
         /* Password for authentication is not used. */
         xConnectInfo.pPassword = NULL;
@@ -579,7 +581,7 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
     #elif defined( democonfigCLIENT_USERNAME )
         /* If not connecting to AWS IoT Core, send the username without modification. */
         xConnectInfo.pUserName = democonfigCLIENT_USERNAME;
-        xConnectInfo.userNameLength = ( uint16_t ) strlen( democonfigCLIENT_USERNAME );
+        xConnectInfo.userNameLength = strlen( democonfigCLIENT_USERNAME );
     #endif /* defined( democonfigCLIENT_USERNAME ) */
 
     /* Send MQTT CONNECT packet to broker. MQTT's Last Will and Testament feature
@@ -588,7 +590,9 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
                             &xConnectInfo,
                             NULL,
                             mqttexampleCONNACK_RECV_TIMEOUT_MS,
-                            &xSessionPresent );
+                            &xSessionPresent,
+                            NULL,
+                            NULL );
 
     LogInfo( ( "Session present: %d\n", xSessionPresent ) );
 
@@ -695,7 +699,7 @@ static void prvSubscriptionCommandCallback( void * pxCommandContext,
                 /* Remove subscription callback for unsubscribe. */
                 removeSubscription( xGlobalSubscriptionList,
                                     pxSubscribeArgs->pSubscribeInfo[ lIndex ].pTopicFilter,
-                                    pxSubscribeArgs->pSubscribeInfo[ lIndex ].topicFilterLength );
+                                    ( uint16_t ) pxSubscribeArgs->pSubscribeInfo[ lIndex ].topicFilterLength );
             }
         }
 
@@ -964,7 +968,7 @@ static void prvMQTTAgentTask( void * pvParameters )
         else if( xMQTTStatus == MQTTSuccess )
         {
             /* MQTTAgent_Terminate() was called, but MQTT was not disconnected. */
-            xMQTTStatus = MQTT_Disconnect( &( xGlobalMqttAgentContext.mqttContext ) );
+            xMQTTStatus = MQTT_Disconnect( &( xGlobalMqttAgentContext.mqttContext ), NULL, NULL );
             configASSERT( xMQTTStatus == MQTTSuccess );
             xNetworkResult = prvSocketDisconnect( &xNetworkContext );
             configASSERT( xNetworkResult == pdPASS );

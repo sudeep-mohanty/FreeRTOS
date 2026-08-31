@@ -114,7 +114,6 @@
 #define mainSEM_TEST_PRIORITY           ( tskIDLE_PRIORITY + 1 )
 #define mainBLOCK_Q_PRIORITY            ( tskIDLE_PRIORITY + 2 )
 #define mainCREATOR_TASK_PRIORITY       ( tskIDLE_PRIORITY + 3 )
-#define mainFLASH_TASK_PRIORITY         ( tskIDLE_PRIORITY + 1 )
 #define mainINTEGER_TASK_PRIORITY       ( tskIDLE_PRIORITY )
 #define mainGEN_QUEUE_TASK_PRIORITY     ( tskIDLE_PRIORITY )
 #define mainFLOP_TASK_PRIORITY          ( tskIDLE_PRIORITY )
@@ -184,7 +183,7 @@ static void prvReloadModeTestTimerCallback( TimerHandle_t xTimer );
 /*-----------------------------------------------------------*/
 
 /* The variable into which error messages are latched. */
-static char * pcStatusMessage = "OK: No errors";
+static const char * pcStatusMessage = "OK: No errors";
 int xErrorCount = 0;
 
 /* This semaphore is created purely to test using the vSemaphoreDelete() and
@@ -510,7 +509,7 @@ void vFullDemoIdleFunction( void )
 
     /* Exercise heap_5 a bit.  The malloc failed hook will trap failed
      * allocations so there is no need to test here. */
-    pvAllocated = pvPortMalloc( ( rand() % 500 ) + 1 );
+    pvAllocated = pvPortMalloc( ( size_t ) ( ( rand() % 500 ) + 1 ) );
     vPortFree( pvAllocated );
 
     /* Exit after a fixed time so code coverage results are written to the
@@ -656,7 +655,8 @@ static void prvDemonstrateTimerQueryFunctions( void )
 
 static void prvDemonstratePendingFunctionCall( void )
 {
-    static intptr_t ulParameter1 = 1000UL, ulParameter2 = 0UL;
+    static intptr_t ulParameter1 = 1000L;
+    static uint32_t ulParameter2 = 0UL;
     const TickType_t xDontBlock = 0; /* This is called from the idle task so must *not* attempt to block. */
 
     /* prvPendedFunction() just expects the parameters to be incremented by one

@@ -1301,7 +1301,7 @@ static void prvSubscriptionCommandCallback( void * pxCommandContext,
                 /* Remove subscription callback for unsubscribe. */
                 removeSubscription( xGlobalSubscriptionList,
                                     pxSubscribeArgs->pSubscribeInfo[ xIndex ].pTopicFilter,
-                                    pxSubscribeArgs->pSubscribeInfo[ xIndex ].topicFilterLength );
+                                    ( uint16_t ) pxSubscribeArgs->pSubscribeInfo[ xIndex ].topicFilterLength );
             }
         }
 
@@ -1590,7 +1590,9 @@ static MQTTStatus_t prvMQTTInit( void )
                               prvGetTimeMs,
                               prvIncomingPublishCallback,
                               /* Context to pass into the callback. Passing the pointer to subscription array. */
-                              xGlobalSubscriptionList );
+                              xGlobalSubscriptionList,
+                              NULL,
+                              0U );
 
     return xReturn;
 }
@@ -1614,7 +1616,7 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
      * the MQTT broker. In a production device the identifier can be something
      * unique, such as a device serial number. */
     xConnectInfo.pClientIdentifier = democonfigCLIENT_IDENTIFIER;
-    xConnectInfo.clientIdentifierLength = ( uint16_t ) strlen( democonfigCLIENT_IDENTIFIER );
+    xConnectInfo.clientIdentifierLength = strlen( democonfigCLIENT_IDENTIFIER );
 
     /* Set MQTT keep-alive period. It is the responsibility of the application
      * to ensure that the interval between Control Packets being sent does not
@@ -1627,12 +1629,12 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
     #ifdef democonfigUSE_AWS_IOT_CORE_BROKER
         #ifdef democonfigCLIENT_USERNAME
             xConnectInfo.pUserName = democonfigCLIENT_USERNAME AWS_IOT_METRICS_STRING;
-            xConnectInfo.userNameLength = ( uint16_t ) strlen( democonfigCLIENT_USERNAME AWS_IOT_METRICS_STRING );
+            xConnectInfo.userNameLength = strlen( democonfigCLIENT_USERNAME AWS_IOT_METRICS_STRING );
             xConnectInfo.pPassword = democonfigCLIENT_PASSWORD;
-            xConnectInfo.passwordLength = ( uint16_t ) strlen( democonfigCLIENT_PASSWORD );
+            xConnectInfo.passwordLength = strlen( democonfigCLIENT_PASSWORD );
         #else
             xConnectInfo.pUserName = AWS_IOT_METRICS_STRING;
-            xConnectInfo.userNameLength = ( uint16_t ) strlen( AWS_IOT_METRICS_STRING );
+            xConnectInfo.userNameLength = strlen( AWS_IOT_METRICS_STRING );
             /* Password for authentication is not used. */
             xConnectInfo.pPassword = NULL;
             xConnectInfo.passwordLength = 0U;
@@ -1640,9 +1642,9 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
     #else /* ifdef democonfigUSE_AWS_IOT_CORE_BROKER */
         #ifdef democonfigCLIENT_USERNAME
             xConnectInfo.pUserName = democonfigCLIENT_USERNAME;
-            xConnectInfo.userNameLength = ( uint16_t ) strlen( democonfigCLIENT_USERNAME );
+            xConnectInfo.userNameLength = strlen( democonfigCLIENT_USERNAME );
             xConnectInfo.pPassword = democonfigCLIENT_PASSWORD;
-            xConnectInfo.passwordLength = ( uint16_t ) strlen( democonfigCLIENT_PASSWORD );
+            xConnectInfo.passwordLength = strlen( democonfigCLIENT_PASSWORD );
         #endif /* ifdef democonfigCLIENT_USERNAME */
     #endif /* ifdef democonfigUSE_AWS_IOT_CORE_BROKER */
 
@@ -1652,7 +1654,9 @@ static MQTTStatus_t prvMQTTConnect( bool xCleanSession )
                             &xConnectInfo,
                             NULL,
                             otaexampleCONNACK_RECV_TIMEOUT_MS,
-                            &xSessionPresent );
+                            &xSessionPresent,
+                            NULL,
+                            NULL );
 
     LogInfo( ( "Session present: %d\n", xSessionPresent ) );
 
@@ -1709,7 +1713,8 @@ static void prvDisconnectFromMQTTBroker( void )
     xCommandContext.xReturnStatus = MQTTSendFailed;
 
     /* Disconnect MQTT session. */
-    xCommandStatus = MQTTAgent_Disconnect( &xGlobalMqttAgentContext, &xCommandParams );
+    MQTTAgentDisconnectArgs_t xDisconnectArgs = { 0 };
+    xCommandStatus = MQTTAgent_Disconnect( &xGlobalMqttAgentContext, &xDisconnectArgs, &xCommandParams );
     configASSERT( xCommandStatus == MQTTSuccess );
 
     xTaskNotifyWait( 0,
@@ -2120,6 +2125,7 @@ static OtaMqttStatus_t prvMQTTPublish( const char * const pacTopic,
     MQTTPublishInfo_t publishInfo = { 0 };
     MQTTAgentCommandInfo_t xCommandParams = { 0 };
     MQTTAgentCommandContext_t xCommandContext = { 0 };
+    MQTTAgentPublishArgs_t xPublishArgs = { 0 };
 
     publishInfo.pTopicName = pacTopic;
     publishInfo.topicNameLength = topicLen;
@@ -2134,8 +2140,11 @@ static OtaMqttStatus_t prvMQTTPublish( const char * const pacTopic,
     xCommandParams.cmdCompleteCallback = prvCommandCallback;
     xCommandParams.pCmdCompleteCallbackContext = ( void * ) &xCommandContext;
 
+    xPublishArgs.pPublishInfo = &publishInfo;
+    xPublishArgs.pProperties = NULL;
+
     mqttStatus = MQTTAgent_Publish( &xGlobalMqttAgentContext,
-                                    &publishInfo,
+                                    &xPublishArgs,
                                     &xCommandParams );
 
     /* Wait for command to complete so MQTTSubscribeInfo_t remains in scope for the
