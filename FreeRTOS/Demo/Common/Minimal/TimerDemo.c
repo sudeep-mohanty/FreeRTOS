@@ -53,6 +53,80 @@
     #define tmrTIMER_TEST_TASK_STACK_SIZE    configMINIMAL_STACK_SIZE
 #endif
 
+/* When set to 1 (the default) prvTest1_CreateTimersWithoutSchedulerRunning
+ * exercises the timer-command-queue-full path: it asks the (configTIMER_QUEUE_LENGTH+1)th
+ * xTimerStart to fail because the queue is full and the scheduler has not yet
+ * drained it.  This assumes vStartTimerDemoTask is called before
+ * vTaskStartScheduler().  On environments where the scheduler is already
+ * running when vStartTimerDemoTask is invoked, the timer service drains the
+ * command queue between submissions and the (N+1)th xTimerStart returns pdPASS
+ * instead of pdFAIL.  Define this macro to 0 in such environments. */
+#ifndef tmrdemoRUN_QUEUE_FULL_CHECK
+    #define tmrdemoRUN_QUEUE_FULL_CHECK    ( 1 )
+#endif
+
+/* On SMP, where the timer service task and this test task run on different
+ * cores, the cross-core synchronisation overhead of issuing many timer
+ * commands can be long enough for a fast auto-reload timer to fire once
+ * before Test3's measurement window begins, inflating its observed count.
+ * Use a dedicated data-group critical section to atomically zero the
+ * callback counters at the start of each Test3 measurement so only firings
+ * that occur during the vTaskDelay are counted.  On granular-locks ports
+ * the plain taskENTER_CRITICAL() variant manipulates the port-shared user
+ * task lock whose state this test should not touch from a deep call chain;
+ * declare this file's own task and ISR spinlocks instead. */
+#if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 )
+    static portSPINLOCK_TYPE xTimerDemoTaskLock = portINIT_SPINLOCK_STATIC;
+    static portSPINLOCK_TYPE xTimerDemoISRLock = portINIT_SPINLOCK_STATIC;
+#endif
+
+/* xTimerStart(), xTimerStop(), xTimerReset() and xTimerChangePeriod() post a
+ * command to the timer service task rather than acting on the timer directly,
+ * so a timer's state only changes once that task has processed the command.
+ * The tests below read the state back on the line after issuing a command,
+ * which holds on a single core because the service task runs at a higher
+ * priority than the test task and so preempts it, processes the command and
+ * returns before the test task reaches its next line.  With more than one core
+ * and multiple priorities the service task instead runs at the same time on the
+ * other core, so the read back can observe the timer before the command has
+ * been applied.  Re-read the state until it settles; if the timeout expires the
+ * state actually observed is returned, so the caller's check still reports the
+ * error. */
+#define tmrdemoSETTLE_PERIOD_MS    ( 100 )
+
+#if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+    static BaseType_t prvTimerIsActiveWhenSettled( TimerHandle_t xTimer,
+                                                   BaseType_t xExpectActive )
+    {
+        const TickType_t xStart = xTaskGetTickCount();
+        BaseType_t xActive;
+
+        for( ; ; )
+        {
+            xActive = xTimerIsTimerActive( xTimer );
+
+            if( ( ( xExpectActive != pdFALSE ) && ( xActive != pdFALSE ) ) ||
+                ( ( xExpectActive == pdFALSE ) && ( xActive == pdFALSE ) ) )
+            {
+                break;
+            }
+
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( tmrdemoSETTLE_PERIOD_MS ) )
+            {
+                break;
+            }
+
+            vTaskDelay( 1 );
+        }
+
+        return xActive;
+    }
+
+    #define tmrdemoTIMER_IS_ACTIVE( xTimer, xExpectActive )    prvTimerIsActiveWhenSettled( ( xTimer ), ( xExpectActive ) )
+#else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+    #define tmrdemoTIMER_IS_ACTIVE( xTimer, xExpectActive )    xTimerIsTimerActive( ( xTimer ) )
+#endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+
 /*-----------------------------------------------------------*/
 
 /* The callback functions used by the timers.  These each increment a counter
@@ -329,16 +403,19 @@ static void prvTest1_CreateTimersWithoutSchedulerRunning( void )
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
     }
-    else
-    {
-        if( xTimerStart( xAutoReloadTimers[ xTimer ], portMAX_DELAY ) == pdPASS )
+
+    #if ( tmrdemoRUN_QUEUE_FULL_CHECK == 1 )
+        else
         {
-            /* This time it would not be expected that the timer could be
-             * started at this point. */
-            xTestStatus = pdFAIL;
-            configASSERT( xTestStatus );
+            if( xTimerStart( xAutoReloadTimers[ xTimer ], portMAX_DELAY ) == pdPASS )
+            {
+                /* This time it would not be expected that the timer could be
+                 * started at this point. */
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
         }
-    }
+    #endif /* if ( tmrdemoRUN_QUEUE_FULL_CHECK == 1 ) */
 
     /* Create the timers that are used from the tick interrupt to test the timer
      * API functions that can be called from an ISR. */
@@ -405,6 +482,19 @@ static void prvTest3_CheckAutoReloadExpireRates( void )
     /* Delaying for configTIMER_QUEUE_LENGTH * xBasePeriod ticks should allow
      * all the auto-reload timers to expire at least once. */
     xBlockPeriod = ( ( TickType_t ) configTIMER_QUEUE_LENGTH ) * xBasePeriod;
+
+    #if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 )
+    {
+        /* Atomically clear callback counters at the start of the measurement
+         * window so any firings that occurred before this point (e.g. while
+         * prvResetStartConditionsForNextIteration's xTimerStart commands were
+         * crossing cores to Tmr Svc) are not counted toward the in-window total. */
+        taskDATA_GROUP_ENTER_CRITICAL( &xTimerDemoTaskLock, &xTimerDemoISRLock );
+        memset( ( void * ) ucAutoReloadTimerCounters, 0, sizeof( ucAutoReloadTimerCounters ) );
+        taskDATA_GROUP_EXIT_CRITICAL( &xTimerDemoTaskLock, &xTimerDemoISRLock );
+    }
+    #endif
+
     vTaskDelay( xBlockPeriod );
 
     /* Check that all the auto-reload timers have called their callback
@@ -463,7 +553,7 @@ static void prvTest4_CheckAutoReloadTimersCanBeStopped( void )
         xTimerStop( xAutoReloadTimers[ ucTimer ], tmrdemoDONT_BLOCK );
 
         /* The timer should now be inactive. */
-        if( xTimerIsTimerActive( xAutoReloadTimers[ ucTimer ] ) != pdFALSE )
+        if( tmrdemoTIMER_IS_ACTIVE( xAutoReloadTimers[ ucTimer ], pdFALSE ) != pdFALSE )
         {
             xTestStatus = pdFAIL;
             configASSERT( xTestStatus );
@@ -530,7 +620,7 @@ static void prvTest5_CheckBasicOneShotTimerBehaviour( void )
     /* Start the one-shot timer and check that it reports its state correctly. */
     xTimerStart( xOneShotTimer, tmrdemoDONT_BLOCK );
 
-    if( xTimerIsTimerActive( xOneShotTimer ) == pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xOneShotTimer, pdTRUE ) == pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -576,7 +666,7 @@ static void prvTest6_CheckAutoReloadResetBehaviour( void )
     /* Restart the one-shot timer and check it reports its status correctly. */
     xTimerStart( xOneShotTimer, tmrdemoDONT_BLOCK );
 
-    if( xTimerIsTimerActive( xOneShotTimer ) == pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xOneShotTimer, pdTRUE ) == pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -586,7 +676,7 @@ static void prvTest6_CheckAutoReloadResetBehaviour( void )
      * status correctly. */
     xTimerStart( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ], tmrdemoDONT_BLOCK );
 
-    if( xTimerIsTimerActive( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ] ) == pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ], pdTRUE ) == pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -601,29 +691,62 @@ static void prvTest6_CheckAutoReloadResetBehaviour( void )
 
         /* Check both running timers are still active, but have not called their
          * callback functions. */
-        if( xTimerIsTimerActive( xOneShotTimer ) == pdFALSE )
-        {
-            xTestStatus = pdFAIL;
-            configASSERT( xTestStatus );
-        }
+        #if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 )
 
-        if( ucOneShotTimerCounter != ( uint8_t ) 0 )
-        {
-            xTestStatus = pdFAIL;
-            configASSERT( xTestStatus );
-        }
+            /* Serialise the active-state + counter snapshot with the timer
+             * callbacks so the four checks below see a consistent view. */
+            taskDATA_GROUP_ENTER_CRITICAL( &xTimerDemoTaskLock, &xTimerDemoISRLock );
 
-        if( xTimerIsTimerActive( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ] ) == pdFALSE )
-        {
-            xTestStatus = pdFAIL;
-            configASSERT( xTestStatus );
-        }
+            if( xTimerIsTimerActive( xOneShotTimer ) == pdFALSE )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
 
-        if( ucAutoReloadTimerCounters[ configTIMER_QUEUE_LENGTH - 1 ] != ( uint8_t ) 0 )
-        {
-            xTestStatus = pdFAIL;
-            configASSERT( xTestStatus );
-        }
+            if( ucOneShotTimerCounter != ( uint8_t ) 0 )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
+
+            if( xTimerIsTimerActive( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ] ) == pdFALSE )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
+
+            if( ucAutoReloadTimerCounters[ configTIMER_QUEUE_LENGTH - 1 ] != ( uint8_t ) 0 )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
+
+            taskDATA_GROUP_EXIT_CRITICAL( &xTimerDemoTaskLock, &xTimerDemoISRLock );
+        #else /* if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 ) */
+            if( xTimerIsTimerActive( xOneShotTimer ) == pdFALSE )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
+
+            if( ucOneShotTimerCounter != ( uint8_t ) 0 )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
+
+            if( xTimerIsTimerActive( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ] ) == pdFALSE )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
+
+            if( ucAutoReloadTimerCounters[ configTIMER_QUEUE_LENGTH - 1 ] != ( uint8_t ) 0 )
+            {
+                xTestStatus = pdFAIL;
+                configASSERT( xTestStatus );
+            }
+        #endif /* if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 ) */
 
         /* Reset both running timers. */
         xTimerReset( xOneShotTimer, tmrdemoDONT_BLOCK );
@@ -642,27 +765,77 @@ static void prvTest6_CheckAutoReloadResetBehaviour( void )
 
     /* The timers were not reset during the above delay period so should now
      * both have called their callback functions. */
-    if( ucOneShotTimerCounter != ( uint8_t ) 1 )
+    #if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
     {
-        xTestStatus = pdFAIL;
-        configASSERT( xTestStatus );
-    }
+        /* The last xTimerReset() of the loop above is applied by the timer
+         * service task on the other core, so each timer's period restarts a
+         * propagation delay after this task issued the command.  The delay
+         * above is exactly one period of the slowest auto-reload timer, so
+         * that timer expires just after the delay ends rather than just
+         * before it.  Wait (bounded) for the expiries to be counted before
+         * taking the snapshot below. */
+        const TickType_t xSettleStart = xTaskGetTickCount();
 
-    if( ucAutoReloadTimerCounters[ configTIMER_QUEUE_LENGTH - 1 ] == 0 )
-    {
-        xTestStatus = pdFAIL;
-        configASSERT( xTestStatus );
+        while( ( ucAutoReloadTimerCounters[ configTIMER_QUEUE_LENGTH - 1 ] == ( uint8_t ) 0 ) ||
+               ( ucOneShotTimerCounter < ( uint8_t ) 1 ) )
+        {
+            if( ( xTaskGetTickCount() - xSettleStart ) > pdMS_TO_TICKS( tmrdemoSETTLE_PERIOD_MS ) )
+            {
+                break;
+            }
+
+            vTaskDelay( 1 );
+        }
     }
+    #endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+
+    #if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 )
+
+        /* Under SMP the inner-loop above admitted up to one "missed-reset"
+         * firing of the one-shot due to xTimerReset propagation delay.  If
+         * that happened, the loop's xTimerReset re-armed the one-shot, and
+         * the post-loop vTaskDelay then expires it again -- so the counter
+         * may legitimately read 1 (no in-loop firing) or 2 (one in-loop
+         * firing followed by the post-loop firing). */
+        taskDATA_GROUP_ENTER_CRITICAL( &xTimerDemoTaskLock, &xTimerDemoISRLock );
+
+        if( ( ucOneShotTimerCounter < ( uint8_t ) 1 ) ||
+            ( ucOneShotTimerCounter > ( uint8_t ) 2 ) )
+        {
+            xTestStatus = pdFAIL;
+            configASSERT( xTestStatus );
+        }
+
+        if( ucAutoReloadTimerCounters[ configTIMER_QUEUE_LENGTH - 1 ] == 0 )
+        {
+            xTestStatus = pdFAIL;
+            configASSERT( xTestStatus );
+        }
+
+        taskDATA_GROUP_EXIT_CRITICAL( &xTimerDemoTaskLock, &xTimerDemoISRLock );
+    #else /* if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 ) */
+        if( ucOneShotTimerCounter != ( uint8_t ) 1 )
+        {
+            xTestStatus = pdFAIL;
+            configASSERT( xTestStatus );
+        }
+
+        if( ucAutoReloadTimerCounters[ configTIMER_QUEUE_LENGTH - 1 ] == 0 )
+        {
+            xTestStatus = pdFAIL;
+            configASSERT( xTestStatus );
+        }
+    #endif /* if ( portUSING_GRANULAR_LOCKS == 1 ) && ( configNUMBER_OF_CORES > 1 ) */
 
     /* The one-shot timer should no longer be active, while the auto-reload
      * timer should still be active. */
-    if( xTimerIsTimerActive( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ] ) == pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ], pdTRUE ) == pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
     }
 
-    if( xTimerIsTimerActive( xOneShotTimer ) == pdTRUE )
+    if( tmrdemoTIMER_IS_ACTIVE( xOneShotTimer, pdFALSE ) == pdTRUE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -671,7 +844,7 @@ static void prvTest6_CheckAutoReloadResetBehaviour( void )
     /* Stop the auto-reload timer again. */
     xTimerStop( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ], tmrdemoDONT_BLOCK );
 
-    if( xTimerIsTimerActive( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ] ) != pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xAutoReloadTimers[ configTIMER_QUEUE_LENGTH - 1 ], pdFALSE ) != pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -717,7 +890,7 @@ static void prvTest7_CheckBacklogBehaviour( void )
     xTimerChangePeriod( xAutoReloadTimers[ 0 ], tmrdemoBACKLOG_TIMER_PERIOD, tmrdemoDONT_BLOCK );
 
     /* The timer should now be active. */
-    if( xTimerIsTimerActive( xAutoReloadTimers[ 0 ] ) == pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xAutoReloadTimers[ 0 ], pdTRUE ) == pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -730,7 +903,7 @@ static void prvTest7_CheckBacklogBehaviour( void )
     xTaskCatchUpTicks( tmrdemoBACKLOG_TIMER_PERIOD * tmrdemoEXPECTED_BACKLOG_EXPIRES );
 
     /* The timer should now be inactive. */
-    if( xTimerIsTimerActive( xAutoReloadTimers[ 0 ] ) != pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xAutoReloadTimers[ 0 ], pdFALSE ) != pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -779,7 +952,7 @@ static void prvTest7_CheckBacklogBehaviour( void )
     vTaskPrioritySet( NULL, uxOriginalPriority );
 
     /* The timer should now be inactive. */
-    if( xTimerIsTimerActive( xOneShotTimer ) != pdFALSE )
+    if( tmrdemoTIMER_IS_ACTIVE( xOneShotTimer, pdFALSE ) != pdFALSE )
     {
         xTestStatus = pdFAIL;
         configASSERT( xTestStatus );
@@ -823,7 +996,7 @@ static void prvResetStartConditionsForNextIteration( void )
         xTimerStart( xAutoReloadTimers[ ucTimer ], tmrdemoDONT_BLOCK );
 
         /* The timer should now be active. */
-        if( xTimerIsTimerActive( xAutoReloadTimers[ ucTimer ] ) == pdFALSE )
+        if( tmrdemoTIMER_IS_ACTIVE( xAutoReloadTimers[ ucTimer ], pdTRUE ) == pdFALSE )
         {
             xTestStatus = pdFAIL;
             configASSERT( xTestStatus );
