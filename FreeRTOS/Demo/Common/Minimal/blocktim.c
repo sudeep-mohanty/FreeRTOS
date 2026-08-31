@@ -87,6 +87,9 @@ static QueueHandle_t xTestQueue;
 /* Handle to the secondary task is required by the primary task for calls
  * to vTaskSuspend/Resume(). */
 static TaskHandle_t xSecondary;
+#if ( configNUMBER_OF_CORES > 1 ) && ( configUSE_CORE_AFFINITY == 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+    static TaskHandle_t xPrimary;
+#endif
 
 /* Used to ensure that tasks are still executing without error. */
 static volatile BaseType_t xPrimaryCycles = 0, xSecondaryCycles = 0;
@@ -114,8 +117,26 @@ void vCreateBlockTimeTasks( void )
         vQueueAddToRegistry( xTestQueue, "Block_Time_Queue" );
 
         /* Create the two test tasks. */
-        xTaskCreate( vPrimaryBlockTimeTestTask, "BTest1", bktBLOCK_TIME_TASK_STACK_SIZE, NULL, bktPRIMARY_PRIORITY, NULL );
+        #if ( configNUMBER_OF_CORES > 1 ) && ( configUSE_CORE_AFFINITY == 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+            xTaskCreate( vPrimaryBlockTimeTestTask, "BTest1", bktBLOCK_TIME_TASK_STACK_SIZE, NULL, bktPRIMARY_PRIORITY, &xPrimary );
+        #else
+            xTaskCreate( vPrimaryBlockTimeTestTask, "BTest1", bktBLOCK_TIME_TASK_STACK_SIZE, NULL, bktPRIMARY_PRIORITY, NULL );
+        #endif
         xTaskCreate( vSecondaryBlockTimeTestTask, "BTest2", bktBLOCK_TIME_TASK_STACK_SIZE, NULL, bktSECONDARY_PRIORITY, &xSecondary );
+
+        #if ( configNUMBER_OF_CORES > 1 ) && ( configUSE_CORE_AFFINITY == 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+
+            /* Tests 3 and 4 have the primary task undo the queue operation that
+             * wakes the secondary task before the secondary task can complete its
+             * own blocked operation, so that the secondary task always runs its
+             * block time out.  That requires the secondary task not to run while
+             * the higher priority primary task runs, which with more than one core
+             * only holds while the two share a core.  Confine them to one core so
+             * the tests measure block times rather than which core won a race; the
+             * other tests in the demo exercise the queue from both cores. */
+            vTaskCoreAffinitySet( xPrimary, ( UBaseType_t ) ( 1U << 1 ) );
+            vTaskCoreAffinitySet( xSecondary, ( UBaseType_t ) ( 1U << 1 ) );
+        #endif
     }
 }
 /*-----------------------------------------------------------*/
