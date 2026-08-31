@@ -76,7 +76,15 @@ static volatile UBaseType_t uxTasksRunningAtStart = 0;
  * be legitimate for several tasks to remain undeleted for a short period.  There
  * may also be a few other unexpected tasks if, for example, the tasks that test
  * static allocation are also being used. */
-static const UBaseType_t uxMaxNumberOfExtraTasksRunning = 3;
+#if ( configNUMBER_OF_CORES == 1 )
+    static const UBaseType_t uxMaxNumberOfExtraTasksRunning = 3;
+#else
+
+/* vTaskDelete() cannot reclaim a task that is running on another core; it is
+ * queued for the idle task instead.  Both tasks of a creation round can be
+ * awaiting that cleanup when the next round starts, so allow two rounds. */
+    static const UBaseType_t uxMaxNumberOfExtraTasksRunning = 5;
+#endif
 
 /* Used to store a handle to the task that should be killed by a suicidal task,
  * before it kills itself. */
