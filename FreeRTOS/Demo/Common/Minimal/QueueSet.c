@@ -598,7 +598,19 @@
             }
 
             /* Ensure the value received was the value expected. */
-            prvCheckReceivedValue( ulReceived );
+            #if ( portUSING_GRANULAR_LOCKS == 1 )
+            {
+                UBaseType_t uxSavedInterruptStatus = taskENTER_CRITICAL_FROM_ISR();
+                {
+                    prvCheckReceivedValue( ulReceived );
+                }
+                taskEXIT_CRITICAL_FROM_ISR( uxSavedInterruptStatus );
+            }
+            #else
+            {
+                prvCheckReceivedValue( ulReceived );
+            }
+            #endif /* if ( portUSING_GRANULAR_LOCKS == 1 ) */
         }
     }
 /*-----------------------------------------------------------*/
