@@ -48,6 +48,77 @@
 /* Exclude the entire file if configSUPPORT_STATIC_ALLOCATION is 0. */
 #if ( configSUPPORT_STATIC_ALLOCATION == 1 )
 
+/* Bounded-wait wrapper around eTaskGetState().  The tasks created below suspend
+ * themselves as their whole body, which on a single core has completed by the
+ * time the creating task runs again because they are created at a higher
+ * priority.  With more than one core the created task instead reaches
+ * vTaskSuspend() at the same time on the other core, so the state has to be
+ * re-read until it settles.  On timeout the state actually observed is
+ * returned, so the check at the call site still reports a task that never
+ * suspended - which matters here because the task is deleted next, and deleting
+ * a task that is still running defers the tear-down and with it the release of
+ * the caller's buffers. */
+    #if ( configNUMBER_OF_CORES > 1 )
+        static eTaskState prvWaitForTaskState( TaskHandle_t xTask,
+                                               eTaskState eExpected )
+        {
+            const TickType_t xStart = xTaskGetTickCount();
+            eTaskState eCurrent;
+
+            for( ; ; )
+            {
+                eCurrent = eTaskGetState( xTask );
+
+                if( eCurrent == eExpected )
+                {
+                    break;
+                }
+
+                if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+                {
+                    break;
+                }
+
+                vTaskDelay( 1 );
+            }
+
+            return eCurrent;
+        }
+
+        #define staticTASK_STATE( xTask, eExpected )    prvWaitForTaskState( ( xTask ), ( eExpected ) )
+    #else /* if ( configNUMBER_OF_CORES > 1 ) */
+        #define staticTASK_STATE( xTask, eExpected )    eTaskGetState( ( xTask ) )
+    #endif /* if ( configNUMBER_OF_CORES > 1 ) */
+
+/* Waits (bounded) for a timer callback to have run the expected number of
+ * times.  xTimerStart() posts a command to the timer service task, so with more
+ * than one core the timer's period starts a propagation delay after this task
+ * issued the command, while the delay this task uses to time the callbacks
+ * starts immediately.  The last callback therefore falls just outside that
+ * delay.  The callback stops the timer once it has run the expected number of
+ * times, so the count settles there and cannot overshoot. */
+    #if ( configNUMBER_OF_CORES > 1 )
+        static void prvWaitForTimerCallbackCount( const volatile UBaseType_t * puxCount,
+                                                  UBaseType_t uxExpected )
+        {
+            const TickType_t xStart = xTaskGetTickCount();
+
+            while( *puxCount != uxExpected )
+            {
+                if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+                {
+                    break;
+                }
+
+                vTaskDelay( 1 );
+            }
+        }
+
+        #define staticWAIT_FOR_TIMER_CALLBACKS( puxCount, uxExpected )    prvWaitForTimerCallbackCount( ( puxCount ), ( uxExpected ) )
+    #else /* if ( configNUMBER_OF_CORES > 1 ) */
+        #define staticWAIT_FOR_TIMER_CALLBACKS( puxCount, uxExpected )    do {} while( 0 )
+    #endif /* if ( configNUMBER_OF_CORES > 1 ) */
+
 /* The priority at which the task that performs the tests is created. */
     #define staticTASK_PRIORITY                    ( tskIDLE_PRIORITY + 2 )
 
@@ -577,7 +648,13 @@
     static void prvCreateAndDeleteStaticallyAllocatedTimers( void )
     {
         TimerHandle_t xTimer;
-        UBaseType_t uxVariableToIncrement;
+
+/* The address of this variable is passed to the timer as its ID, so it has to
+ * outlive the timer.  If a timer has not stopped itself by the time the checks
+ * below run, the delete that follows is only queued to the timer service task
+ * and a callback can still dereference this address after this function has
+ * returned.  Only one task calls this function. */
+        static UBaseType_t uxVariableToIncrement;
         const TickType_t xTimerPeriod = pdMS_TO_TICKS( 20 );
         BaseType_t xReturned;
 
@@ -622,6 +699,8 @@
 
         /* By now the timer should have expired staticMAX_TIMER_CALLBACK_EXECUTIONS
          * times, and then stopped itself. */
+        staticWAIT_FOR_TIMER_CALLBACKS( &uxVariableToIncrement, staticMAX_TIMER_CALLBACK_EXECUTIONS );
+
         if( uxVariableToIncrement != staticMAX_TIMER_CALLBACK_EXECUTIONS )
         {
             xErrorOccurred = __LINE__;
@@ -662,6 +741,8 @@
             }
 
             vTaskDelay( xTimerPeriod * staticMAX_TIMER_CALLBACK_EXECUTIONS );
+
+            staticWAIT_FOR_TIMER_CALLBACKS( &uxVariableToIncrement, staticMAX_TIMER_CALLBACK_EXECUTIONS );
 
             if( uxVariableToIncrement != staticMAX_TIMER_CALLBACK_EXECUTIONS )
             {
@@ -729,10 +810,13 @@
 
 /* The variable that will hold the TCB of tasks created by this function.  See
  * the comments above the declaration of the xCreatorTaskTCBBuffer variable for
- * more information.  NOTE:  This is not static so relies on the tasks that use it
- * being deleted before this function returns and deallocates its stack.  That will
- * only be the case if configUSE_PREEMPTION is set to 1. */
-        StaticTask_t xTCBBuffer;
+ * more information.  This is static because the buffer has to outlive the task
+ * that uses it: vTaskDelete() only tears a task down immediately when that task
+ * is not running, and with more than one core the created task can still be
+ * running on the other core, in which case the kernel keeps referencing the TCB
+ * after this function has returned and its stack frame has been reused.  Only
+ * one task calls this function, so one shared buffer is enough. */
+        static StaticTask_t xTCBBuffer;
 
 /* This buffer that will be used as the stack of tasks created by this function.
  * See the comments above the declaration of the uxCreatorTaskStackBuffer[] array
@@ -759,7 +843,7 @@
         {
             xErrorOccurred = __LINE__;
         }
-        else if( eTaskGetState( xCreatedTask ) != eSuspended )
+        else if( staticTASK_STATE( xCreatedTask, eSuspended ) != eSuspended )
         {
             /* The created task had a higher priority so should have executed and
              * suspended itself by now. */
@@ -785,7 +869,7 @@
                 uxTaskPriorityGet( NULL ) + 1, /* The priority of the task. */
                 &xCreatedTask );               /* Handle of the task being created. */
 
-            if( eTaskGetState( xCreatedTask ) != eSuspended )
+            if( staticTASK_STATE( xCreatedTask, eSuspended ) != eSuspended )
             {
                 xErrorOccurred = __LINE__;
             }
