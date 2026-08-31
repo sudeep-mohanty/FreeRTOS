@@ -91,6 +91,41 @@
     #define ebEVENT_GROUP_SET_BITS_TEST_TASK_STACK_SIZE    configMINIMAL_STACK_SIZE
 #endif
 
+/* Bounded-wait wrapper around eTaskGetState(): under multi-priority SMP
+ * a peer task may still be transitioning to the expected state on
+ * another core when this site observes it.  Wait (bounded) for the
+ * observation to become valid; if the timeout expires, return a value
+ * that cannot match any eTaskState so the original "!= expected" check
+ * still flags the error. */
+#if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
+    static eTaskState prvCheckTaskState( TaskHandle_t xTask,
+                                         eTaskState eExpected )
+    {
+        TickType_t xStart = xTaskGetTickCount();
+        eTaskState eCurrent;
+
+        for( ; ; )
+        {
+            eCurrent = eTaskGetState( xTask );
+
+            if( eCurrent == eExpected )
+            {
+                return eCurrent;
+            }
+
+            if( ( xTaskGetTickCount() - xStart ) > pdMS_TO_TICKS( 100 ) )
+            {
+                return eCurrent;
+            }
+
+            vTaskDelay( 1 );
+        }
+    }
+    #define ebCHECK_TASK_STATE( xTask, eExpected )    prvCheckTaskState( ( xTask ), ( eExpected ) )
+#else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+    #define ebCHECK_TASK_STATE( xTask, eExpected )    eTaskGetState( ( xTask ) )
+#endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+
 /*-----------------------------------------------------------*/
 
 /*
@@ -236,17 +271,17 @@ static void prvTestMasterTask( void * pvParameters )
 
         /* Now all the other tasks should have completed and suspended
          * themselves ready for the next go around the loop. */
-        if( eTaskGetState( xTestSlaveTaskHandle ) != eSuspended )
+        if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eSuspended ) != eSuspended )
         {
             xError = pdTRUE;
         }
 
-        if( eTaskGetState( xSyncTask1 ) != eSuspended )
+        if( ebCHECK_TASK_STATE( xSyncTask1, eSuspended ) != eSuspended )
         {
             xError = pdTRUE;
         }
 
-        if( eTaskGetState( xSyncTask2 ) != eSuspended )
+        if( ebCHECK_TASK_STATE( xSyncTask2, eSuspended ) != eSuspended )
         {
             xError = pdTRUE;
         }
@@ -506,17 +541,17 @@ static BaseType_t prvPerformTaskSyncTests( BaseType_t xError,
 
     /* The three tasks that take part in the synchronisation (rendezvous) are
      * expected to be in the suspended state at the start of the test. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask1 ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xSyncTask1, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask2 ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xSyncTask2, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
@@ -560,17 +595,17 @@ static BaseType_t prvPerformTaskSyncTests( BaseType_t xError,
     vTaskResume( xSyncTask1 );
     vTaskResume( xSyncTask2 );
 
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask1 ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xSyncTask1, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask2 ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xSyncTask2, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
@@ -596,17 +631,17 @@ static BaseType_t prvPerformTaskSyncTests( BaseType_t xError,
 
     /* The other tasks should now all be suspended again, ready for the next
      * synchronisation. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask1 ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xSyncTask1, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask2 ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xSyncTask2, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
@@ -619,17 +654,17 @@ static BaseType_t prvPerformTaskSyncTests( BaseType_t xError,
     vTaskResume( xSyncTask1 );
     vTaskResume( xSyncTask2 );
 
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask1 ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xSyncTask1, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask2 ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xSyncTask2, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
@@ -654,38 +689,70 @@ static BaseType_t prvPerformTaskSyncTests( BaseType_t xError,
     }
 
     /* The other tasks should now all be in the ready state again, but not
-     * executed yet as this task still has a higher relative priority. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eReady )
+     * executed yet as this task still has a higher relative priority.
+     * Under multi-priority SMP they may legitimately also be Running on
+     * the peer core, or have already advanced to Blocked on the next
+     * sync wait, so any non-Suspended state is acceptable there. */
+    #if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 )
     {
-        xError = pdTRUE;
-    }
+        eTaskState eState;
 
-    if( eTaskGetState( xSyncTask1 ) != eReady )
-    {
-        xError = pdTRUE;
-    }
+        eState = eTaskGetState( xTestSlaveTaskHandle );
 
-    if( eTaskGetState( xSyncTask2 ) != eReady )
-    {
-        xError = pdTRUE;
+        if( ( eState != eReady ) && ( eState != eRunning ) && ( eState != eBlocked ) )
+        {
+            xError = pdTRUE;
+        }
+
+        eState = eTaskGetState( xSyncTask1 );
+
+        if( ( eState != eReady ) && ( eState != eRunning ) && ( eState != eBlocked ) )
+        {
+            xError = pdTRUE;
+        }
+
+        eState = eTaskGetState( xSyncTask2 );
+
+        if( ( eState != eReady ) && ( eState != eRunning ) && ( eState != eBlocked ) )
+        {
+            xError = pdTRUE;
+        }
     }
+    #else /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
+    {
+        if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eReady ) != eReady )
+        {
+            xError = pdTRUE;
+        }
+
+        if( ebCHECK_TASK_STATE( xSyncTask1, eReady ) != eReady )
+        {
+            xError = pdTRUE;
+        }
+
+        if( ebCHECK_TASK_STATE( xSyncTask2, eReady ) != eReady )
+        {
+            xError = pdTRUE;
+        }
+    }
+    #endif /* if ( configNUMBER_OF_CORES > 1 ) && ( configRUN_MULTIPLE_PRIORITIES == 1 ) */
 
     /* Reset the priority of this task back to its original value. */
     vTaskPrioritySet( NULL, ebSET_BIT_TASK_PRIORITY );
 
     /* Now all the other tasks should have reblocked on the event bits
      * to test the behaviour when the event bits are deleted. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask1 ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xSyncTask1, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask2 ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xSyncTask2, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
@@ -704,7 +771,7 @@ static BaseType_t prvBitCombinationTestMasterFunction( BaseType_t xError,
     vTaskResume( xTestSlaveTaskHandle );
 
     /* Ensure the other task is blocked on the task. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
@@ -725,7 +792,7 @@ static BaseType_t prvBitCombinationTestMasterFunction( BaseType_t xError,
     }
 
     /* Ensure the other task is still in the blocked state. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
@@ -743,7 +810,7 @@ static BaseType_t prvBitCombinationTestMasterFunction( BaseType_t xError,
     }
 
     /* Ensure the other task is still in the blocked state. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
@@ -753,7 +820,7 @@ static BaseType_t prvBitCombinationTestMasterFunction( BaseType_t xError,
     xEventGroupSetBits( xEventGroup, ebBIT_1 );
 
     /* Ensure the other task is suspended. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
@@ -776,7 +843,7 @@ static BaseType_t prvBitCombinationTestMasterFunction( BaseType_t xError,
     vTaskResume( xTestSlaveTaskHandle );
 
     /* Ensure the other task is blocked once again. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eBlocked )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eBlocked ) != eBlocked )
     {
         xError = pdTRUE;
     }
@@ -785,7 +852,7 @@ static BaseType_t prvBitCombinationTestMasterFunction( BaseType_t xError,
     xEventGroupSetBits( xEventGroup, ebBIT_1 );
 
     /* Ensure the other task is suspended once again. */
-    if( eTaskGetState( xTestSlaveTaskHandle ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xTestSlaveTaskHandle, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
@@ -864,12 +931,12 @@ static BaseType_t prvSelectiveBitsTestMasterFunction( void )
      * this test.
      *
      * Both other tasks should start in the suspended state. */
-    if( eTaskGetState( xSyncTask1 ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xSyncTask1, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
 
-    if( eTaskGetState( xSyncTask2 ) != eSuspended )
+    if( ebCHECK_TASK_STATE( xSyncTask2, eSuspended ) != eSuspended )
     {
         xError = pdTRUE;
     }
@@ -882,12 +949,12 @@ static BaseType_t prvSelectiveBitsTestMasterFunction( void )
         vTaskResume( xSyncTask2 );
 
         /* Now both tasks should be blocked on the event group. */
-        if( eTaskGetState( xSyncTask1 ) != eBlocked )
+        if( ebCHECK_TASK_STATE( xSyncTask1, eBlocked ) != eBlocked )
         {
             xError = pdTRUE;
         }
 
-        if( eTaskGetState( xSyncTask2 ) != eBlocked )
+        if( ebCHECK_TASK_STATE( xSyncTask2, eBlocked ) != eBlocked )
         {
             xError = pdTRUE;
         }
@@ -900,7 +967,7 @@ static BaseType_t prvSelectiveBitsTestMasterFunction( void )
         if( ( uxBit & ebSELECTIVE_BITS_1 ) == 0 )
         {
             /* Task should not have unblocked. */
-            if( eTaskGetState( xSyncTask1 ) != eBlocked )
+            if( ebCHECK_TASK_STATE( xSyncTask1, eBlocked ) != eBlocked )
             {
                 xError = pdTRUE;
             }
@@ -908,7 +975,7 @@ static BaseType_t prvSelectiveBitsTestMasterFunction( void )
         else
         {
             /* Task should have unblocked and returned to the suspended state. */
-            if( eTaskGetState( xSyncTask1 ) != eSuspended )
+            if( ebCHECK_TASK_STATE( xSyncTask1, eSuspended ) != eSuspended )
             {
                 xError = pdTRUE;
             }
@@ -918,7 +985,7 @@ static BaseType_t prvSelectiveBitsTestMasterFunction( void )
         if( ( uxBit & ebSELECTIVE_BITS_2 ) == 0 )
         {
             /* Task should not have unblocked. */
-            if( eTaskGetState( xSyncTask2 ) != eBlocked )
+            if( ebCHECK_TASK_STATE( xSyncTask2, eBlocked ) != eBlocked )
             {
                 xError = pdTRUE;
             }
@@ -926,7 +993,7 @@ static BaseType_t prvSelectiveBitsTestMasterFunction( void )
         else
         {
             /* Task should have unblocked and returned to the suspended state. */
-            if( eTaskGetState( xSyncTask2 ) != eSuspended )
+            if( ebCHECK_TASK_STATE( xSyncTask2, eSuspended ) != eSuspended )
             {
                 xError = pdTRUE;
             }
